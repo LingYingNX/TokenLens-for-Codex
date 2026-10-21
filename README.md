@@ -2,7 +2,8 @@
 
 在 Codex++ 底栏显示实时 `tok/s`，悬停查看本轮吞吐、工具分类、Token 与缓存，以及 Codex 会话的累计消耗。
 
-![TokenLens for Codex](preview.png)  ![Uploading image.png…]()
+![TokenLens for Codex](preview.png)  <img width="317" height="63" alt="image" src="https://github.com/user-attachments/assets/17839c8b-4598-4f0f-83bd-a196938642f4" />
+
 
 
 ## 功能
