@@ -16,8 +16,6 @@
 
 ## 安装
 
-需要先安装 [Codex](https://chatgpt.com/codex) 和 [Codex++](https://github.com/BigPizzaV3/CodexPlusPlus)。
-
 ### Windows
 
 在 PowerShell 中运行：
