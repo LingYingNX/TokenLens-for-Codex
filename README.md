@@ -37,3 +37,7 @@ curl -fsSL "https://raw.githubusercontent.com/LingYingNX/TokenLens-for-Codex/mai
 ## 说明
 
 数据来自 Codex 本地事件与会话记录，不上传会话内容。页面刷新后，状态栏会在下一次模型或工具事件到达时恢复。
+
+## 许可证
+
+[MIT](LICENSE)

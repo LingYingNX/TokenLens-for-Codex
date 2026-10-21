@@ -1,3 +1,12 @@
+// ==UserScript==
+// @name         TokenLens for Codex
+// @namespace    tokenlens-for-codex
+// @version      1.0.0
+// @description  Codex++ throughput, tool, token, cache and usage status line.
+// @match        app://-/*
+// @run-at       document-start
+// ==/UserScript==
+
 /* Codex++ external extension: turn token throughput status line. */
 (() => {
   const registerCodexPlusExtensionSelector = () => {};
