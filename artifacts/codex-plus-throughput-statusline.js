@@ -599,6 +599,7 @@
       observedFromStart: false,
       lastHistorySample: null,
       skipMatchingUsage: false,
+      appliedTotals: new Set(),
       toolIntervals: [],
       toolDetails: [],
       activeTools: new Map(),
@@ -750,6 +751,11 @@
       if (contextWindow && contextWindow > 0) turn.contextWindow = contextWindow;
       const contextTokens = previous.total ?? current.total;
       if (contextTokens != null) turn.contextTokens = Math.max(turn.contextTokens || 0, contextTokens);
+      // 同一累计值已经计入过就整条丢弃，重放的旧通知不再重复累加。
+      if (current.total != null && turn.appliedTotals?.has(current.total)) {
+        turn.speedIntervalStartedAt = at;
+        return turn;
+      }
       const samples = [
         ["inputTokens", "totalInputSeen", current.input, previous.input],
         ["cachedInputTokens", "totalCachedInputSeen", current.cached, previous.cached],
@@ -762,6 +768,7 @@
         for (const [, seenField, currentValue] of samples) {
           turn[seenField] = currentValue;
         }
+        if (current.total != null) turn.appliedTotals?.add(current.total);
         turn.skipMatchingUsage = false;
         turn.lastHistorySample = null;
         turn.speedIntervalStartedAt = at;
@@ -784,6 +791,10 @@
           changed = true;
         }
         turn[seenField] = current;
+      }
+      if (current.total != null && turn.appliedTotals) {
+        turn.appliedTotals.add(current.total);
+        if (turn.appliedTotals.size > 256) turn.appliedTotals.delete(turn.appliedTotals.values().next().value);
       }
       if (changed) {
         turn.usageSamples += 1;
@@ -914,11 +925,16 @@
     const rows = Array.isArray(result?.history) ? result.history : [];
     const samples = [];
     const seen = new Set();
+    let lastCumulative = null;
     for (const row of rows) {
       const observedAt = Date.parse(row?.observed_at || row?.observedAt || row?.timestamp || row?.created_at || "");
       const usage = codexPlusUsageTokenTotals(row?.usage || row?.tokenUsage || row?.token_usage || row);
       if (!Number.isFinite(observedAt) || !usage) continue;
       const turnId = String(row?.turn_id || row?.turnId || "");
+      // 重放或重复的 token_count 会换个时间戳再来一次，累计值没涨就是同一条。
+      const cumulative = codexPlusUsageNumber(row?.usage?.contextUsed ?? row?.usage?.context_used);
+      if (cumulative != null && cumulative === lastCumulative) continue;
+      lastCumulative = cumulative;
       const key = [observedAt, turnId, usage.input, usage.cached, usage.output, usage.total].join("|");
       if (seen.has(key)) continue;
       seen.add(key);
