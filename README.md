@@ -3,11 +3,9 @@
 在 Codex++ 底栏显示实时 `tok/s`，悬停查看本轮吞吐、工具分类、Token 与缓存，以及 Codex 会话的累计消耗。
 
 在我血亏各种token，是别人的5倍以上用量，各种多余的消耗之后做了这个监控插件，单次输出的量太大的时候，是时候重开会话了
-有好的想法建议可以提，后续打算会增加更为详细的数据，比如有用信息结构权重（不清楚能不能实现）
+有好的想法建议可以提，后续打算会增加更为详细的数据，比如有用信息结构权重（不清楚能不能实现），平均速度为档次轮次的平均，下一轮次重新计算
 
-平均速度为档次轮次的平均，下一轮次重新计算
-<img width="269" height="492" alt="image" src="https://github.com/user-attachments/assets/f84acf38-c05f-44ee-b4b9-4812832675df" />
-
+<img width="269" height="492" alt="image" src="https://github.com/user-attachments/assets/f84acf38-c05f-44ee-b4b9-4812832675df" />  <img width="214" height="64" alt="image" src="https://github.com/user-attachments/assets/4e0ab2d4-9ada-41ed-bdb6-06a06bce29d5" />
 
 ## 功能
 
