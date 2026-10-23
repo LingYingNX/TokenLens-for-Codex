@@ -1,29 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-
-const source = fs.readFileSync(path.join(__dirname, "..", "tokenlens.js"), "utf8");
-
-function extract(name) {
-  const start = source.indexOf("  function " + name + "(");
-  if (start < 0) throw new Error("missing function: " + name);
-  let index = source.indexOf("{", start);
-  let depth = 0;
-  for (; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        index += 1;
-        break;
-      }
-    }
-  }
-  return source.slice(start, index);
-}
+const { extract } = require("./helpers");
 
 const turnGroups = new Function(
   extract("codexPlusUsageTurnGroups") + "\nreturn codexPlusUsageTurnGroups;",
@@ -31,6 +10,8 @@ const turnGroups = new Function(
 
 const chartHelpers = new Function(
   [
+    extract("codexPlusUsageNumber"),
+    extract("codexPlusUsageMergeHistorySamples"),
     extract("codexPlusUsageSampleKey"),
     extract("codexPlusUsageChartCalls"),
     extract("codexPlusUsageChartScale"),
@@ -79,13 +60,13 @@ test("柱状图按时间保留超过 20 次的全部调用", () => {
   assert.equal(calls[24].tokens, 10024);
 });
 
-test("柱状图刻度从 36 万开始逐级翻倍", () => {
-  assert.deepEqual(chartScale(0), { top: 360000, mid: 180000 });
-  assert.deepEqual(chartScale(360000), { top: 360000, mid: 180000 });
-  assert.deepEqual(chartScale(360001), { top: 360000, mid: 180000 });
-  assert.deepEqual(chartScale(396000), { top: 360000, mid: 180000 });
-  assert.deepEqual(chartScale(396001), { top: 720000, mid: 360000 });
-  assert.deepEqual(chartScale(720000), { top: 720000, mid: 360000 });
-  assert.deepEqual(chartScale(792000), { top: 720000, mid: 360000 });
-  assert.deepEqual(chartScale(792001), { top: 1440000, mid: 720000 });
+test("柱状图刻度从 10 万开始逐级翻倍", () => {
+  assert.deepEqual(chartScale(0), { top: 100000, mid: 50000 });
+  assert.deepEqual(chartScale(100000), { top: 100000, mid: 50000 });
+  assert.deepEqual(chartScale(100001), { top: 200000, mid: 100000 });
+  assert.deepEqual(chartScale(200000), { top: 200000, mid: 100000 });
+  assert.deepEqual(chartScale(200001), { top: 400000, mid: 200000 });
+  assert.deepEqual(chartScale(400000), { top: 400000, mid: 200000 });
+  assert.deepEqual(chartScale(400001), { top: 800000, mid: 400000 });
+  assert.deepEqual(chartScale(800001), { top: 1600000, mid: 800000 });
 });

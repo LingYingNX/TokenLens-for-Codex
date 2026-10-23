@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TokenLens for Codex
 // @namespace    tokenlens-for-codex
-// @version      1.0.13
+// @version      1.0.3
 // @description  Codex++ throughput, tool, token, cache and usage status line.
 // @match        app://-/*
 // @run-at       document-start
@@ -9,9 +9,7 @@
 
 /* Codex++ external extension: turn token throughput status line. */
 (() => {
-  const registerCodexPlusExtensionSelector = () => {};
   const visibleElement = (node) => !!node && ((node.getClientRects?.().length || 0) > 0 || node.offsetWidth > 0 || node.offsetHeight > 0);
-  const codexPlusBackendSettingsLoaded = true;
   // 宿主「用量状态栏」开关是唯一真值；先按默认值渲染，读回后立即纠正。
   let codexPlusUsageStatusLineEnabled = true;
   const codexPlusSettings = () => ({ usageStatusLine: codexPlusUsageStatusLineEnabled });
@@ -50,17 +48,16 @@
    * - 助手消息或计划条目完成时结束当前解码区间；
    * - 工具条目开始与完成之间的并集计为工具耗时；
    * - token 用量按线程累计输出增量计入当前轮；
-   * - 中途安装时从当前线程 rollout 回填当前轮并去重。
+   * - 中途安装时从宿主历史接口回填当前轮并去重。
    *
    * 悬停速度值可查看首 token、工具耗时以及本轮 token 用量。
    */
-  registerCodexPlusExtensionSelector('[data-codex-plus-ext="user-throughput-statusline"]');
   window.__codexPlusThroughputStatusLineRuntime?.dispose?.();
 
   const codexPlusUsageStatusLineId = "codex-plus-throughput-statusline";
   const codexPlusUsagePopoverId = "codex-plus-throughput-popover";
   const codexPlusUsageStyleId = "codex-plus-throughput-statusline-style";
-  const codexPlusUsageVersion = 35;
+  const codexPlusUsageVersion = 41;
   const codexPlusUsageThemeKey = "tokenlens-theme";
   const codexPlusUsageGlobalApiKey = "__codexDailyTokenUsage";
   const codexPlusUsageGlobalRefreshMs = 5 * 60 * 1000;
@@ -68,6 +65,8 @@
   const codexPlusUsageIdleTickMs = 4000;
   const codexPlusUsageLiveContextRefreshMs = 2000;
   const codexPlusUsageMaxTurns = 32;
+  const codexPlusUsageMaxLiveSamples = 512;
+  const codexPlusUsageMaxChartBars = 200;
   const codexPlusUsageModelItemTypes = new Set([
     "agentmessage", "plan", "reasoning", "usermessage", "hookprompt", "functioncalloutput",
   ]);
@@ -119,11 +118,7 @@
     globalUsageLoading: false,
     globalUsageError: "",
     globalUsagePromise: null,
-    globalUsageSamples: [],
-    globalUsageScanned: false,
-    globalUsageByThread: new Map(),
-    globalUsageTruncated: false,
-    globalAppServicesPromise: null,
+    globalUsageCoverage: { available: 0, total: 0 },
     nativeMessageHandler: null,
     nativeViewHandler: null,
     resizeHandler: null,
@@ -174,7 +169,6 @@
           presetToday: "今天",
           presetYesterday: "昨天",
           presetWeek: "近7天",
-          partial: "部分",
           custom: "区间消耗",
           start: "起始",
           end: "截止",
@@ -236,7 +230,6 @@
         presetToday: "Today",
         presetYesterday: "Yesterday",
         presetWeek: "7 days",
-        partial: "partial",
         custom: "Range",
         start: "Start",
         end: "End",
@@ -305,7 +298,6 @@
 
   function codexPlusUsageInstallStyle() {
     const existing = document.getElementById(codexPlusUsageStyleId);
-    if (existing?.dataset.version === String(codexPlusUsageVersion)) return;
     existing?.remove();
     const style = document.createElement("style");
     style.id = codexPlusUsageStyleId;
@@ -719,17 +711,6 @@
     return total + end - start;
   }
 
-  function codexPlusUsageToolDurationBetween(turn, start, end) {
-    if (!(end > start)) return 0;
-    const intervals = turn?.toolIntervals?.slice?.() || [];
-    for (const tool of turn?.activeTools?.values?.() || []) {
-      if (Number.isFinite(tool?.startedAt)) intervals.push([tool.startedAt, end]);
-    }
-    return codexPlusUsageMergedDuration(intervals
-      .filter((interval) => Array.isArray(interval) && interval[1] > start && interval[0] < end)
-      .map((interval) => [Math.max(start, interval[0]), Math.min(end, interval[1])]));
-  }
-
   function codexPlusUsageSameTotals(left, right) {
     if (!left || !right) return false;
     return ["input", "cached", "output", "total"].every((key) => left[key] === right[key]);
@@ -764,6 +745,7 @@
       lastHistorySample: null,
       skipMatchingUsage: false,
       appliedTotals: new Set(),
+      callSamples: [],
       toolIntervals: [],
       toolDetails: [],
       activeTools: new Map(),
@@ -783,6 +765,32 @@
       codexPlusUsageRecordTool(turn, id, tool, tool?.startedAt, at);
     }
     turn.activeTools.clear();
+  }
+
+  function codexPlusUsageCallSample(turn, previous, deltas, at, current) {
+    const value = (key) => {
+      const lastCall = Number(previous?.[key]);
+      if (Number.isFinite(lastCall) && lastCall > 0) return lastCall;
+      return Math.max(0, Number(deltas?.[key]) || 0);
+    };
+    const sample = {
+      turnId: String(turn?.turnId || ""),
+      observedAt: Number.isFinite(at) ? at : Date.now(),
+      input: value("input"),
+      cached: value("cached"),
+      output: value("output"),
+      total: value("total"),
+      contextTokens: Number(current?.total) > 0 ? current.total : Number(previous?.total) || 0,
+    };
+    return sample.total > 0 ? sample : null;
+  }
+
+  function codexPlusUsageRememberCallSample(turn, sample) {
+    if (!turn || !sample) return;
+    turn.callSamples.push(sample);
+    if (turn.callSamples.length > codexPlusUsageMaxLiveSamples) {
+      turn.callSamples.splice(0, turn.callSamples.length - codexPlusUsageMaxLiveSamples);
+    }
   }
 
   function codexPlusUsageRecordTool(turn, id, kind, startedAt, endedAt, durationMs = null) {
@@ -938,6 +946,7 @@
       }
       let changed = false;
       let outputDelta = 0;
+      const deltas = { input: 0, cached: 0, output: 0, total: 0 };
       for (const [field, seenField, current, lastValue] of samples) {
         if (current == null) continue;
         if (turn[seenField] == null || current < turn[seenField]) {
@@ -946,6 +955,7 @@
         const delta = Math.max(0, current - turn[seenField]);
         if (delta > 0) {
           turn[field] += delta;
+          deltas[field] += delta;
           if (field === "outputTokens") outputDelta = delta;
           changed = true;
         }
@@ -957,6 +967,10 @@
       }
       if (changed) {
         turn.usageSamples += 1;
+        codexPlusUsageRememberCallSample(
+          turn,
+          codexPlusUsageCallSample(turn, previous, deltas, at, current),
+        );
         const lastCallTokens = previous.total > 0 ? previous.total : outputDelta;
         if (lastCallTokens > 0) turn.lastCallTokens = lastCallTokens;
         const output = previous.output > 0 ? previous.output : outputDelta;
@@ -985,8 +999,8 @@
     return outputTokens > 0 && decodeMs > 0 ? outputTokens / (decodeMs / 1000) : null;
   }
 
-  function codexPlusUsageAverageSpeed(outputTokens, turnMs) {
-    return outputTokens > 0 && turnMs > 0 ? outputTokens / (turnMs / 1000) : null;
+  function codexPlusUsageAverageSpeed(decodeOutputTokens, decodeMs) {
+    return codexPlusUsageDecodeSpeed(decodeOutputTokens, decodeMs);
   }
 
   function codexPlusUsageFormatSpeed(value) {
@@ -1109,7 +1123,10 @@
     );
     return {
       speed: codexPlusUsageDecodeSpeed(turn.decodeOutputTokens, decodeMs),
-      averageSpeed: codexPlusUsageAverageSpeed(turn.outputTokens, turnMs),
+      averageSpeed: codexPlusUsageAverageSpeed(
+        turn.decodeOutputTokens,
+        decodeMs,
+      ),
       ttftMs,
       decodeMs,
       toolMs,
@@ -1119,6 +1136,7 @@
       endedAt: end,
       outputTokens: turn.outputTokens,
       lastCallTokens: turn.lastCallTokens,
+      callSamples: turn.callSamples.slice(-codexPlusUsageMaxLiveSamples),
       contextPercent: context.percent,
       contextWindow: context.window,
       toolDetails,
@@ -1166,116 +1184,6 @@
     return samples.sort((left, right) => left.observedAt - right.observedAt);
   }
 
-  function codexPlusUsageLocalDateKey(value) {
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) return "";
-    const pad = (number) => String(number).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  }
-
-  function codexPlusUsageRolloutPathInfo(value) {
-    const path = String(value || "").replace(/^\\\\\?\\/, "").replace(/\\/g, "/");
-    const match = /^(.*?)\/\.codex\/sessions\/(\d{4})\/(\d{2})\/(\d{2})\/[^/]+\.jsonl$/i.exec(path);
-    if (!match) return null;
-    return {
-      path,
-      sessionsRoot: `${match[1]}/.codex/sessions`,
-      dateKey: `${match[2]}-${match[3]}-${match[4]}`,
-    };
-  }
-
-  function codexPlusUsageHistoryMonthKeys(startAt, endAt) {
-    if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt < startAt) return [];
-    const start = new Date(startAt);
-    const end = new Date(endAt);
-    const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
-    const last = new Date(end.getFullYear(), end.getMonth(), 1);
-    const keys = [];
-    const pad = (number) => String(number).padStart(2, "0");
-    while (cursor <= last && keys.length < 120) {
-      keys.push(`${cursor.getFullYear()}/${pad(cursor.getMonth() + 1)}`);
-      cursor.setMonth(cursor.getMonth() + 1);
-    }
-    return keys;
-  }
-
-  function codexPlusUsageRolloutNameMatches(name, threadId) {
-    const normalized = String(threadId || "").toLowerCase();
-    const fileName = String(name || "").toLowerCase();
-    return !!normalized
-      && fileName.endsWith(".jsonl")
-      && fileName.includes(normalized);
-  }
-
-  function codexPlusUsageRawHistorySamples(text, fallback) {
-    fallback = fallback && typeof fallback === "object" ? fallback : {};
-    if (typeof text !== "string" || !text) return [];
-    const records = [];
-    const legacy = [];
-    const fallbackThreadId = codexPlusUsageNormalizeThreadId(fallback.threadId);
-    let currentTurnId = "";
-    let contextWindow = null;
-    let offset = 0;
-    while (offset < text.length) {
-      const lineEnd = text.indexOf("\n", offset);
-      const end = lineEnd < 0 ? text.length : lineEnd;
-      const line = text.slice(offset, end);
-      offset = lineEnd < 0 ? text.length : lineEnd + 1;
-      if (!line
-        || (!line.includes("token_usage_record")
-          && !line.includes("token_count")
-          && !line.includes("turn_context")
-          && !line.includes("task_started"))) {
-        continue;
-      }
-      let row;
-      try {
-        row = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const payload = row?.payload && typeof row.payload === "object" ? row.payload : {};
-      const payloadType = String(payload.type || "");
-      const eventTurnId = String(payload.turn_id || payload.turnId || "").trim();
-      if (row?.type === "turn_context" || payloadType === "task_started") {
-        currentTurnId = eventTurnId || currentTurnId;
-      }
-      const observedAt = Date.parse(row?.timestamp || payload.timestamp || "");
-      if (!Number.isFinite(observedAt)) continue;
-      if (row?.type === "token_usage_record") {
-        const usage = codexPlusUsageTokenTotals(payload.usage || payload.last_token_usage || payload.lastTokenUsage);
-        if (!usage) continue;
-        const cumulative = codexPlusUsageTokenTotals(payload.thread_token_usage || payload.threadTokenUsage);
-        records.push({
-          observedAt,
-          turnId: eventTurnId || currentTurnId,
-          threadId: codexPlusUsageNormalizeThreadId(payload.thread_id || payload.threadId) || fallbackThreadId,
-          ...usage,
-          contextTokens: cumulative?.total ?? usage.total,
-          contextWindow,
-        });
-        continue;
-      }
-      if (row?.type !== "event_msg" || payloadType !== "token_count") continue;
-      const info = payload.info && typeof payload.info === "object" ? payload.info : {};
-      const usage = codexPlusUsageTokenTotals(info.last_token_usage || info.lastTokenUsage);
-      const cumulative = codexPlusUsageTokenTotals(info.total_token_usage || info.totalTokenUsage);
-      const window = codexPlusUsageNumber(info.model_context_window ?? info.modelContextWindow);
-      if (window != null) contextWindow = window;
-      if (!usage) continue;
-      legacy.push({
-        observedAt,
-        turnId: eventTurnId || currentTurnId,
-        threadId: fallbackThreadId,
-        ...usage,
-        contextTokens: cumulative?.total ?? usage.total,
-        contextWindow: window,
-      });
-    }
-    const samples = records.length ? records : legacy;
-    return samples.sort((left, right) => left.observedAt - right.observedAt);
-  }
-
   function codexPlusUsageMergeHistorySamples(...collections) {
     const samples = [];
     const seen = new Set();
@@ -1299,79 +1207,6 @@
       }
     }
     return samples.sort((left, right) => left.observedAt - right.observedAt);
-  }
-
-  async function codexPlusUsageRolloutPaths(threadId, rolloutPath, services) {
-    const servicesForFiles = services || await codexPlusUsageResolveAppServices();
-    const readDirectory = servicesForFiles?.workspaceFiles?.listDirectory;
-    if (typeof readDirectory !== "function") return rolloutPath ? [rolloutPath] : [];
-    const latest = codexPlusUsageRolloutPathInfo(rolloutPath);
-    const startAt = codexPlusUsageUuidTime(threadId)
-      || (latest?.dateKey ? new Date(`${latest.dateKey}T00:00:00`).getTime() : 0);
-    if (!latest?.sessionsRoot || !Number.isFinite(startAt) || startAt <= 0) {
-      return latest?.path ? [latest.path] : [];
-    }
-    const startDateKey = codexPlusUsageLocalDateKey(startAt);
-    const endDateKey = codexPlusUsageLocalDateKey(Date.now());
-    const paths = new Set(latest.path ? [latest.path] : []);
-    // shortcut: 只扫描当前 rollout 所属 Codex home，跨 home 会话需扩展。
-    const months = codexPlusUsageHistoryMonthKeys(startAt, Date.now());
-    const days = [];
-    await codexPlusUsageMapLimit(months, 2, async (month) => {
-      try {
-        const listing = await readDirectory({
-          hostId: "local",
-          workspaceRoot: latest.sessionsRoot,
-          directoryPath: month,
-          includeHidden: true,
-        });
-        for (const entry of listing?.entries || []) {
-          if (entry?.type !== "directory" || !/^\d{2}$/.test(String(entry.name || ""))) continue;
-          const dateKey = `${month.replace("/", "-")}-${entry.name}`;
-          if (dateKey >= startDateKey && dateKey <= endDateKey) days.push({ month, day: entry.name, dateKey });
-        }
-      } catch {
-      }
-    });
-    await codexPlusUsageMapLimit(days.sort((left, right) => left.dateKey.localeCompare(right.dateKey)), 2, async ({ month, day }) => {
-      try {
-        const listing = await readDirectory({
-          hostId: "local",
-          workspaceRoot: latest.sessionsRoot,
-          directoryPath: `${month}/${day}`,
-          includeHidden: true,
-        });
-        for (const entry of listing?.entries || []) {
-          if (entry?.type !== "file" || !codexPlusUsageRolloutNameMatches(entry.name, threadId)) continue;
-          paths.add(`${latest.sessionsRoot}/${month}/${day}/${entry.name}`);
-        }
-      } catch {
-      }
-    });
-    return [...paths];
-  }
-
-  async function codexPlusUsageReadRolloutHistory(threadId, rolloutPath) {
-    const services = await codexPlusUsageResolveAppServices();
-    const readFile = services?.workspaceFiles?.read;
-    if (typeof readFile !== "function") return [];
-    const paths = await codexPlusUsageRolloutPaths(threadId, rolloutPath, services);
-    if (!paths.length) return [];
-    const collections = await codexPlusUsageMapLimit(paths, 2, async (path) => {
-      try {
-        const result = await readFile({
-          hostId: "local",
-          path,
-          representation: "text",
-          maxBytes: 64 * 1024 * 1024,
-        });
-        return codexPlusUsageRawHistorySamples(result?.text, { threadId });
-      } catch {
-        // shortcut: 单分段超过读取上限时保留宿主最新分段，完整历史需分块读取。
-        return [];
-      }
-    });
-    return codexPlusUsageMergeHistorySamples(...collections);
   }
 
   function codexPlusUsageSeedHistoryTurn(threadId) {
@@ -1454,7 +1289,7 @@
   }
 
   function codexPlusUsageIsGlobalRange(range) {
-    return range === "today" || range === "yesterday" || range === "week";
+    return range === "today" || range === "yesterday" || range === "week" || range === "custom";
   }
 
   function codexPlusUsageBeijingDateKey(value) {
@@ -1463,204 +1298,36 @@
     return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
   }
 
-  function codexPlusUsageAbsoluteUrl(value) {
-    try {
-      return new URL(String(value || ""), document.baseURI || location.href).href;
-    } catch {
-      return "";
+  function codexPlusUsageGlobalDateKeys(startAt, endAt) {
+    if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt < startAt) return [];
+    const dayMs = 24 * 60 * 60 * 1000;
+    let cursor = codexPlusUsageBeijingDayStart(startAt);
+    const last = codexPlusUsageBeijingDayStart(endAt);
+    const keys = [];
+    while (cursor <= last && keys.length < 370) {
+      keys.push(codexPlusUsageBeijingDateKey(cursor));
+      cursor += dayMs;
     }
+    return keys;
   }
 
-  function codexPlusUsageLoadedAssetUrls() {
-    const urls = new Set();
-    for (const node of document.querySelectorAll("script[src],link[href]")) {
-      const url = codexPlusUsageAbsoluteUrl(node.src || node.href);
-      if (/\/assets\/.+\.js(?:$|\?)/.test(url)) urls.add(url);
-    }
-    try {
-      for (const entry of performance.getEntriesByType?.("resource") || []) {
-        const url = codexPlusUsageAbsoluteUrl(entry.name);
-        if (/\/assets\/.+\.js(?:$|\?)/.test(url)) urls.add(url);
-      }
-    } catch {
-    }
-    return [...urls];
-  }
-
-  async function codexPlusUsageResolveAppServices() {
-    if (codexPlusUsageState.globalAppServicesPromise) return codexPlusUsageState.globalAppServicesPromise;
-    codexPlusUsageState.globalAppServicesPromise = (async () => {
-      const urls = codexPlusUsageLoadedAssetUrls().filter((url) => /\/assets\/rpc-[^/]+\.js(?:$|\?)/.test(url));
-      for (const url of urls) {
-        try {
-          const moduleExports = await import(/* @vite-ignore */ url);
-          if (moduleExports?.appServices?.localThreadCatalog) return moduleExports.appServices;
-        } catch {
-        }
-      }
-      return null;
-    })();
-    return codexPlusUsageState.globalAppServicesPromise;
-  }
-
-  function codexPlusUsageThreadTimestamp(value) {
-    if (typeof value === "number") return value < 1e12 ? value * 1000 : value;
-    const parsed = Date.parse(String(value || ""));
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function codexPlusUsageUuidTime(value) {
-    const compact = String(value || "").replace(/-/g, "");
-    if (!/^[0-9a-f]{12}/i.test(compact) || compact[12]?.toLowerCase() !== "7") return 0;
-    return Number.parseInt(compact.slice(0, 12), 16) || 0;
-  }
-
-  function codexPlusUsageThreadIdentity(entry) {
-    return codexPlusUsageNormalizeThreadId(
-      entry?.id || entry?.threadId || entry?.thread_id || entry?.conversationId || entry?.conversation_id,
-    );
-  }
-
-  function codexPlusUsageThreadUpdatedAt(entry) {
-    return codexPlusUsageThreadTimestamp(
-      entry?.updatedAt
-      ?? entry?.updated_at
-      ?? entry?.lastUpdatedAt
-      ?? entry?.last_updated_at
-      ?? entry?.sourceUpdatedAt
-      ?? entry?.sourceRecencyAt
-      ?? entry?.createdAt
-      ?? entry?.created_at,
-    ) || codexPlusUsageUuidTime(codexPlusUsageThreadIdentity(entry));
-  }
-
-  function codexPlusUsageBootstrapThreadIds(bootstrap) {
-    const ids = new Set();
-    for (const entry of bootstrap?.catalogEntries || []) {
-      const id = codexPlusUsageThreadIdentity(entry);
-      if (id) ids.add(id);
-    }
-    const trackedKeys = new Set(["projectless-thread-ids", "thread-workspace-root-hints", "thread-project-assignments"]);
-    for (const entry of bootstrap?.globalStateEntries || []) {
-      if (!trackedKeys.has(entry?.key)) continue;
-      const values = Array.isArray(entry.value) ? entry.value : Object.keys(entry.value || {});
-      for (const value of values) {
-        const id = codexPlusUsageNormalizeThreadId(value);
-        if (id) ids.add(id);
-      }
-    }
-    return [...ids];
-  }
-
-  async function codexPlusUsageRecentThreadIds() {
-    const services = await codexPlusUsageResolveAppServices();
-    const bootstrap = await window.electronBridge?.getInitialSidebarBootstrap?.();
-    if (!services?.localThreadCatalog || !bootstrap) return [];
-    const ids = new Set(codexPlusUsageBootstrapThreadIds(bootstrap));
-    const entries = new Map();
-    for (const entry of bootstrap.catalogEntries || []) {
-      const id = codexPlusUsageThreadIdentity(entry);
-      if (id) entries.set(id, entry);
-    }
-    const allIds = [...ids];
-    for (let offset = 0; offset < allIds.length; offset += 100) {
-      const refs = allIds.slice(offset, offset + 100).map((threadId) => ({ hostId: "local", threadId }));
-      try {
-        const rows = await services.localThreadCatalog.readEntries(refs);
-        for (const entry of rows || []) {
-          const id = codexPlusUsageThreadIdentity(entry);
-          if (id) {
-            ids.add(id);
-            entries.set(id, entry);
-          }
-        }
-      } catch {
-      }
-    }
-    const minimum = codexPlusUsageBeijingDayStart(Date.now()) - 6 * 24 * 60 * 60 * 1000;
-    const recent = [...ids]
-      .map((id) => ({ id, updatedAt: codexPlusUsageThreadUpdatedAt(entries.get(id) || { id }) }))
-      .filter((entry) => entry.updatedAt >= minimum)
-      .sort((left, right) => right.updatedAt - left.updatedAt);
-    codexPlusUsageState.globalUsageTruncated = recent.length > 200;
-    return recent.slice(0, 200);
-  }
-
-  async function codexPlusUsageMapLimit(items, limit, mapper) {
-    const results = new Array(items.length);
-    let index = 0;
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-      while (index < items.length) {
-        const current = index;
-        index += 1;
-        results[current] = await mapper(items[current]);
-      }
-    }));
-    return results;
-  }
-
-  async function codexPlusUsageScanGlobalSessions() {
-    const threads = await codexPlusUsageRecentThreadIds();
-    if (!threads.length || typeof window.codexPlus?.call !== "function") {
-      return { samples: [], threadsRead: 0 };
-    }
-    let threadsRead = 0;
-    const seen = new Set();
-    const samples = [];
-    const cachedByThread = codexPlusUsageState.globalUsageByThread;
-    for (const key of cachedByThread.keys()) {
-      if (!threads.some((thread) => thread.id === key)) cachedByThread.delete(key);
-    }
-    const results = await codexPlusUsageMapLimit(threads, 2, async ({ id: threadId, updatedAt }) => {
-      const cached = cachedByThread.get(threadId);
-      if (cached && cached.updatedAt === updatedAt) {
-        threadsRead += 1;
-        return cached.samples;
-      }
-      try {
-        const result = await window.codexPlus.call("/thread-usage-history", { session_id: threadId });
-        threadsRead += 1;
-        const threadSamples = codexPlusUsageHistorySamples(result).map((sample) => ({ ...sample, threadId }));
-        cachedByThread.set(threadId, { updatedAt, samples: threadSamples });
-        return threadSamples;
-      } catch {
-        return [];
-      }
-    });
-    for (const threadSamples of results) {
-      for (const sample of threadSamples) {
-        const key = [sample.threadId, sample.turnId, sample.observedAt, sample.input, sample.cached, sample.output, sample.total].join("|");
-        if (seen.has(key)) continue;
-        seen.add(key);
-        samples.push(sample);
-      }
-    }
-    samples.sort((left, right) => left.observedAt - right.observedAt);
-    return { samples, threadsRead };
-  }
-
-  function codexPlusUsageGlobalTotal(range, now = Date.now()) {
+  function codexPlusUsageGlobalTotal(range, now = Date.now(), api = window[codexPlusUsageGlobalApiKey]) {
     const bounds = codexPlusUsageRangeBounds(range, now);
     if (!bounds) return null;
-    if (codexPlusUsageState.globalUsageScanned) {
-      return codexPlusUsageState.globalUsageSamples
-        .filter((sample) => sample.observedAt >= bounds.start && sample.observedAt <= bounds.end)
-        .reduce((total, sample) => total + sample.total, 0);
-    }
     if (!codexPlusUsageIsGlobalRange(range)) return null;
-    const api = window[codexPlusUsageGlobalApiKey];
     if (typeof api?.getSnapshot !== "function") return null;
-    const dayMs = 24 * 60 * 60 * 1000;
-    const count = range === "week" ? 7 : 1;
-    const offset = range === "yesterday" ? 1 : 0;
-    const today = codexPlusUsageBeijingDayStart(now);
+    const keys = codexPlusUsageGlobalDateKeys(bounds.start, bounds.end);
+    if (!keys.length) return null;
     let total = 0;
-    for (let index = 0; index < count; index += 1) {
-      const snapshot = api.getSnapshot(codexPlusUsageBeijingDateKey(today - (offset + index) * dayMs));
-      if (!Number.isFinite(snapshot?.total)) return null;
+    let available = 0;
+    for (const key of keys) {
+      const snapshot = api.getSnapshot(key);
+      if (snapshot?.dateKey !== key || !Number.isFinite(snapshot?.total)) continue;
+      available += 1;
       total += snapshot.total;
     }
-    return total;
+    codexPlusUsageState.globalUsageCoverage = { available, total: keys.length };
+    return available ? total : null;
   }
 
   async function codexPlusUsageRefreshGlobalUsage(force = false) {
@@ -1669,20 +1336,10 @@
     codexPlusUsageState.globalUsageLoading = true;
     codexPlusUsageState.globalUsageError = "";
     codexPlusUsageState.globalUsagePromise = (async () => {
-      try {
-        const scan = await codexPlusUsageScanGlobalSessions();
-        if (!scan.threadsRead) throw new Error("未找到可读取的 Codex 会话");
-        codexPlusUsageState.globalUsageSamples = scan.samples;
-        codexPlusUsageState.globalUsageScanned = true;
-        codexPlusUsageState.globalUsageFetchedAt = Date.now();
-      } catch (scanError) {
-        const api = window[codexPlusUsageGlobalApiKey];
-        if (typeof api?.runHistoryBackfill !== "function") throw scanError;
-        await api.runHistoryBackfill();
-        codexPlusUsageState.globalUsageSamples = [];
-        codexPlusUsageState.globalUsageScanned = false;
-        codexPlusUsageState.globalUsageFetchedAt = Date.now();
-      }
+      const api = window[codexPlusUsageGlobalApiKey];
+      if (typeof api?.getSnapshot !== "function") throw new Error("未找到每日消耗数据源");
+      if (typeof api.runHistoryBackfill === "function") await api.runHistoryBackfill();
+      codexPlusUsageState.globalUsageFetchedAt = Date.now();
     })().catch((error) => {
       codexPlusUsageState.globalUsageError = String(error?.message || error);
     }).finally(() => {
@@ -1700,9 +1357,22 @@
     if (codexPlusUsageState.range === "task") {
       return { label: text.labels.task, value: snapshot?.usage?.total ?? null };
     }
+    const value = codexPlusUsageGlobalTotal(codexPlusUsageState.range);
     const base = text.labels[codexPlusUsageState.range] || text.labels.custom;
-    const label = codexPlusUsageState.globalUsageTruncated ? `${base}（${text.labels.partial}）` : base;
-    return { label, value: codexPlusUsageGlobalTotal(codexPlusUsageState.range) };
+    const coverage = codexPlusUsageState.globalUsageCoverage;
+    return {
+      label: coverage.total > coverage.available
+        ? `${base}（${coverage.available}/${coverage.total}）`
+        : base,
+      value,
+    };
+  }
+
+  function codexPlusUsageTrimMap(map, maximum, keepKey = "") {
+    for (const key of map.keys()) {
+      if (map.size <= maximum) break;
+      if (key !== keepKey) map.delete(key);
+    }
   }
 
   function codexPlusUsageRefreshLiveContext(threadId, force = false) {
@@ -1728,6 +1398,8 @@
           contextTokens: live.contextTokens ?? previous.contextTokens,
           contextWindow: live.contextWindow > 0 ? live.contextWindow : previous.contextWindow,
         });
+        codexPlusUsageTrimMap(codexPlusUsageState.liveContextByThread, codexPlusUsageMaxTurns, id);
+        codexPlusUsageTrimMap(codexPlusUsageState.liveContextFetchedAt, codexPlusUsageMaxTurns, id);
         const turn = codexPlusUsageState.turns.get(id);
         if (turn) {
           if (live.contextTokens != null) turn.contextTokens = live.contextTokens;
@@ -1756,10 +1428,9 @@
         const result = await window.codexPlus.call("/thread-usage-history", { session_id: threadId });
         if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId) return;
         const latestSamples = codexPlusUsageHistorySamples(result);
-        const rolloutSamples = await codexPlusUsageReadRolloutHistory(threadId, result?.rollout_path);
-        if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId) return;
         codexPlusUsageState.historyThreadId = threadId;
-        codexPlusUsageState.historySamples = codexPlusUsageMergeHistorySamples(latestSamples, rolloutSamples);
+        // shortcut: /thread-usage-history 只返回最新 rollout 分段，完整分段历史需宿主提供接口。
+        codexPlusUsageState.historySamples = latestSamples;
         codexPlusUsageState.historyFetchedAt = Date.now();
         codexPlusUsageSeedHistoryTurn(threadId);
       } catch (error) {
@@ -2284,7 +1955,8 @@
   }
 
   function codexPlusUsageChartCalls(samples, snapshot, liveTurnId = "", now = Date.now()) {
-    const calls = (Array.isArray(samples) ? samples : [])
+    const mergedSamples = codexPlusUsageMergeHistorySamples(samples, snapshot?.callSamples);
+    const calls = mergedSamples
       .map((sample, index) => {
         const tokens = Number(sample?.total);
         if (!Number.isFinite(tokens) || tokens <= 0) return null;
@@ -2327,11 +1999,16 @@
     return calls.sort((left, right) => left.observedAt - right.observedAt || left.id.localeCompare(right.id));
   }
 
+  function codexPlusUsageChartWindow(calls) {
+    // shortcut: 图表最多渲染最近 200 次，TOP 排行仍使用完整样本。
+    return (Array.isArray(calls) ? calls : []).slice(-codexPlusUsageMaxChartBars);
+  }
+
   function codexPlusUsageChartScale(value) {
-    const base = 360000;
+    const base = 100000;
     let top = base;
     const maximum = Number(value);
-    while (Number.isFinite(maximum) && maximum > top * 1.1) top *= 2;
+    while (Number.isFinite(maximum) && maximum > top) top *= 2;
     return { top, mid: top / 2 };
   }
 
@@ -2384,20 +2061,16 @@
       snapshot,
       liveTurn?.turnId || "",
     );
-    const renderCount = codexPlusUsageEnsureChartColumns(parts, calls.length);
+    const renderedCalls = codexPlusUsageChartWindow(calls);
+    const renderCount = codexPlusUsageEnsureChartColumns(parts, renderedCalls.length);
     const scale = codexPlusUsageChartScale(
-      calls.reduce((maximum, item) => Math.max(maximum, item.tokens), 0),
+      renderedCalls.reduce((maximum, item) => Math.max(maximum, item.tokens), 0),
     );
     parts.fields.yTop.textContent = codexPlusUsageFormatWan(scale.top);
     parts.fields.yMid.textContent = codexPlusUsageFormatWan(scale.mid);
     const topIds = [rankedCalls[0]?.id, rankedCalls[1]?.id, rankedCalls[2]?.id];
-    const previousCount = Number(parts.chartScroll.dataset.count || 0);
-    const wasAtLatest = previousCount === 0
-      || parts.chartScroll.scrollLeft + parts.chartScroll.clientWidth >= parts.chartScroll.scrollWidth - 8;
-    const shouldStickToLatest = wasAtLatest || calls.length > previousCount;
-    parts.chartScroll.dataset.count = String(calls.length);
     for (let index = 0; index < renderCount; index += 1) {
-      const item = calls[index] || null;
+      const item = renderedCalls[index] || null;
       const ref = parts.bars[index];
       const height = item && item.tokens > 0
         ? Math.max(2, Math.round(item.tokens / scale.top * 90))
@@ -2416,11 +2089,6 @@
       ref.tooltip.textContent = summary;
       ref.col.title = summary;
       parts.xLabels[index].classList.toggle("current", !!item?.isCurrent);
-    }
-    if (shouldStickToLatest) {
-      window.requestAnimationFrame(() => {
-        parts.chartScroll.scrollLeft = parts.chartScroll.scrollWidth;
-      });
     }
   }
 
@@ -2568,6 +2236,53 @@
     codexPlusUsageState.lastFingerprint = "";
   }
 
+  function codexPlusUsageRenderFingerprint(snapshot, context) {
+    if (!snapshot) {
+      return [
+        "empty",
+        context.percent,
+        context.window,
+        codexPlusUsageState.range,
+        codexPlusUsageState.historyLoading,
+        codexPlusUsageState.historyError,
+        codexPlusUsageState.globalUsageLoading,
+        codexPlusUsageState.globalUsageError,
+        codexPlusUsageState.globalUsageCoverage.available,
+        codexPlusUsageState.globalUsageCoverage.total,
+      ].join("|");
+    }
+    const speed = snapshot.speed == null ? "--" : codexPlusUsageFormatSpeed(snapshot.speed);
+    const hitRate = codexPlusUsageFormatPercent(snapshot.usage?.hitRate);
+    const consumption = codexPlusUsageSelectedConsumption(snapshot);
+    const toolDetails = (snapshot.toolDetails || []).map((detail) => `${detail.label}:${detail.durationMs}`).join(",");
+    return [
+      speed,
+      snapshot.averageSpeed,
+      snapshot.turnMs,
+      context.percent,
+      context.window,
+      snapshot.toolMs,
+      toolDetails,
+      snapshot.usage?.input,
+      snapshot.usage?.output,
+      snapshot.usage?.cached,
+      snapshot.usage?.hitRate,
+      hitRate,
+      consumption.label,
+      consumption.value,
+      codexPlusUsageState.range,
+      codexPlusUsageState.historyLoading,
+      codexPlusUsageState.historyError,
+      codexPlusUsageState.globalUsageLoading,
+      codexPlusUsageState.globalUsageError,
+      codexPlusUsageState.historyFetchedAt,
+      codexPlusUsageState.toolExpanded,
+      codexPlusUsageState.tokenExpanded,
+      snapshot.samples,
+      snapshot.completed,
+    ].join("|");
+  }
+
   function codexPlusUsageRender(snapshot) {
     const node = codexPlusUsageState.node;
     if (!node?.isConnected) return;
@@ -2575,21 +2290,11 @@
     const text = codexPlusUsageText();
     const speed = snapshot?.speed == null ? "--" : codexPlusUsageFormatSpeed(snapshot.speed);
     const hitRate = codexPlusUsageFormatPercent(snapshot?.usage?.hitRate);
-    const consumption = codexPlusUsageSelectedConsumption(snapshot);
     const context = codexPlusUsageContextSnapshot(
       codexPlusUsageState.turns.get(codexPlusUsageState.threadId),
       codexPlusUsageState.liveContextByThread.get(codexPlusUsageState.threadId),
     );
-    const toolDetails = (snapshot?.toolDetails || []).map((detail) => `${detail.label}:${detail.durationMs}`).join(",");
-    const fingerprint = snapshot
-      ? [
-        speed, context.percent, context.window, snapshot.toolMs, toolDetails,
-        snapshot.usage?.input, snapshot.usage?.output, snapshot.usage?.cached, snapshot.usage?.hitRate,
-        consumption.value, codexPlusUsageState.range, codexPlusUsageState.historyLoading,
-        codexPlusUsageState.historyFetchedAt, codexPlusUsageState.toolExpanded,
-        codexPlusUsageState.tokenExpanded, snapshot.samples, snapshot.completed,
-      ].join("|")
-      : ["empty", context.percent, context.window].join("|");
+    const fingerprint = codexPlusUsageRenderFingerprint(snapshot, context);
     if (fingerprint !== codexPlusUsageState.lastFingerprint) {
       codexPlusUsageState.lastFingerprint = fingerprint;
       parts.speed.value.textContent = text.speed(speed);
@@ -2605,7 +2310,6 @@
 
   function codexPlusUsageEnabled() {
     return !codexPlusUsageState.disposed
-      && codexPlusBackendSettingsLoaded
       && codexPlusSettings().usageStatusLine === true;
   }
 
@@ -2749,13 +2453,11 @@
       codexPlusUsageState.parts = null;
       codexPlusUsageState.popover = null;
       codexPlusUsageState.popoverParts = null;
-      codexPlusUsageState.globalUsageSamples = [];
-      codexPlusUsageState.globalUsageScanned = false;
-      codexPlusUsageState.globalAppServicesPromise = null;
       codexPlusUsageState.globalUsageFetchedAt = 0;
       codexPlusUsageState.globalUsageLoading = false;
       codexPlusUsageState.globalUsageError = "";
       codexPlusUsageState.globalUsagePromise = null;
+      codexPlusUsageState.globalUsageCoverage = { available: 0, total: 0 };
       codexPlusUsageState.lastFingerprint = "";
       globalThis.__CODEX_PLUS_THROUGHPUT_STATUSLINE_SYNC__ = undefined;
       if (globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ === codexPlusUsageStatusLineSync) {

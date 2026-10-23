@@ -1,36 +1,16 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-
-const source = fs.readFileSync(path.join(__dirname, "..", "tokenlens.js"), "utf8");
-
-function extract(name) {
-  const start = source.indexOf("  function " + name + "(");
-  if (start < 0) throw new Error("missing function: " + name);
-  let index = source.indexOf("{", start);
-  let depth = 0;
-  for (; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        index += 1;
-        break;
-      }
-    }
-  }
-  return source.slice(start, index);
-}
+const { extract } = require("./helpers");
 
 const turnGroups = new Function(
   extract("codexPlusUsageTurnGroups") + "\nreturn codexPlusUsageTurnGroups;",
 )();
 
 const averageSpeed = new Function(
-  extract("codexPlusUsageAverageSpeed") + "\nreturn codexPlusUsageAverageSpeed;",
+  extract("codexPlusUsageDecodeSpeed") + "\n"
+  + extract("codexPlusUsageAverageSpeed") + "\nreturn codexPlusUsageAverageSpeed;",
 )();
 
 test("按轮次汇总调用次数与 token", () => {
@@ -61,8 +41,8 @@ test("没有轮次 id 的实时数据仍进入图表", () => {
   assert.equal(groups[0].tokens, 12);
 });
 
-test("平均速度按当前轮输出与整轮耗时计算", () => {
-  assert.equal(averageSpeed(2000, 10000), 200);
+test("平均速度使用本轮多次调用的输出与解码时间总和", () => {
+  assert.equal(averageSpeed(1800, 10000), 180);
   assert.equal(averageSpeed(0, 10000), null);
-  assert.equal(averageSpeed(2000, 0), null);
+  assert.equal(averageSpeed(1800, 0), null);
 });

@@ -1,31 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-
-const root = path.resolve(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "tokenlens.js"), "utf8");
-
-// 从发布脚本里原样抽出参与去重的函数，避免测试跑在另一份副本上。
-function extract(name) {
-  const start = source.indexOf("  function " + name + "(");
-  if (start < 0) throw new Error("missing function: " + name);
-  let index = source.indexOf("{", start);
-  let depth = 0;
-  for (; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        index += 1;
-        break;
-      }
-    }
-  }
-  return source.slice(start, index);
-}
+const { extract } = require("./helpers");
 
 const historySamples = new Function(
   extract("codexPlusUsageNumber") + "\n"

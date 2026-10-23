@@ -1,32 +1,13 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-
-const source = fs.readFileSync(path.join(__dirname, "..", "tokenlens.js"), "utf8");
-
-function extract(name) {
-  const start = source.indexOf("  function " + name + "(");
-  if (start < 0) throw new Error("missing function: " + name);
-  let index = source.indexOf("{", start);
-  let depth = 0;
-  for (; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        index += 1;
-        break;
-      }
-    }
-  }
-  return source.slice(start, index);
-}
+const { extract } = require("./helpers");
 
 const ranking = new Function(
   [
+    extract("codexPlusUsageNumber"),
+    extract("codexPlusUsageMergeHistorySamples"),
     extract("codexPlusUsageSampleKey"),
     extract("codexPlusUsageChartCalls"),
     extract("codexPlusUsageTopCalls"),
