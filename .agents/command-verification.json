@@ -1,0 +1,51 @@
+{
+  "verified_at": "2026-10-23T09:46:24Z",
+  "smoke_tested": false,
+  "commands": {
+    "`node --check tokenlens.js`": {
+      "exists": false
+    },
+    "tokenlens.js": {
+      "exists": false
+    },
+    "tests/helpers.js": {
+      "exists": false
+    },
+    "node --test tests/analytics.test.js": {
+      "exists": true
+    },
+    "`node --test tests/*.test.js`": {
+      "exists": false
+    },
+    "artifacts/codex-plus-throughput-statusline.js": {
+      "exists": false
+    },
+    "`node --test tests/analytics.test.js`": {
+      "exists": false
+    },
+    "Copy `tokenlens.js` into `%APPDATA%\\Codex++\\user_scripts\\`, then reload the extension": {
+      "exists": false
+    },
+    "README.md": {
+      "exists": false
+    },
+    "preview.png": {
+      "exists": false
+    },
+    "node --test tests/*.test.js": {
+      "exists": true
+    },
+    "tests/*.test.js": {
+      "exists": false
+    },
+    "LICENSE": {
+      "exists": false
+    },
+    "artifacts/codex-plus-throughput-preview.png": {
+      "exists": false
+    },
+    "node --check tokenlens.js": {
+      "exists": true
+    }
+  }
+}
