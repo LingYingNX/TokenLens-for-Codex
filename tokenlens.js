@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TokenLens for Codex
 // @namespace    tokenlens-for-codex
-// @version      1.0.3
+// @version      1.0.4
 // @description  Codex++ throughput, tool, token, cache and usage status line.
 // @match        app://-/*
 // @run-at       document-start
@@ -59,7 +59,7 @@
   const codexPlusUsageStatusLineId = "codex-plus-throughput-statusline";
   const codexPlusUsagePopoverId = "codex-plus-throughput-popover";
   const codexPlusUsageStyleId = "codex-plus-throughput-statusline-style";
-  const codexPlusUsageVersion = 41;
+  const codexPlusUsageVersion = 42;
   const codexPlusUsageThemeKey = "tokenlens-theme";
   const codexPlusUsageGlobalApiKey = "__codexDailyTokenUsage";
   const codexPlusUsageGlobalRefreshMs = 5 * 60 * 1000;
@@ -1748,6 +1748,12 @@
     return desired;
   }
 
+  function codexPlusUsagePinChartToLatest(parts) {
+    const scroll = parts?.chartScroll;
+    if (!scroll) return;
+    scroll.scrollLeft = scroll.scrollWidth;
+  }
+
   function codexPlusUsageBuildPopover() {
     if (codexPlusUsageState.popover) return codexPlusUsageState.popoverParts;
     const popover = document.createElement("div");
@@ -2169,6 +2175,7 @@
       ref.col.title = summary;
       parts.xLabels[index].classList.toggle("current", !!item?.isCurrent);
     }
+    codexPlusUsagePinChartToLatest(parts);
   }
 
   function codexPlusUsageUpdatePopover(snapshot) {
@@ -2285,6 +2292,7 @@
       codexPlusUsageTurnSnapshot(codexPlusUsageState.turns.get(codexPlusUsageState.threadId), Date.now()),
     );
     parts.popover.hidden = false;
+    codexPlusUsagePinChartToLatest(parts);
     codexPlusUsagePositionPopover();
   }
 

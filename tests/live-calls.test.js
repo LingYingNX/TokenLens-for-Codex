@@ -21,6 +21,10 @@ const chartCalls = new Function(
   ].join("\n") + "\nreturn { chartCalls: codexPlusUsageChartCalls, chartWindow: codexPlusUsageChartWindow };",
 )(200);
 
+const pinChartToLatest = new Function(
+  extract("codexPlusUsagePinChartToLatest") + "\nreturn codexPlusUsagePinChartToLatest;",
+)();
+
 test("实时逐次调用优先使用 last 用量而不是轮次累计", () => {
   const sample = callSample.callSample(
     { turnId: "turn-1" },
@@ -65,4 +69,10 @@ test("图表只渲染最近 200 次调用，排行数据不受影响", () => {
   assert.equal(windowed.length, 200);
   assert.equal(windowed[0].tokens, 61);
   assert.equal(windowed.at(-1).tokens, 260);
+});
+
+test("图表渲染后固定显示最新一次调用", () => {
+  const scroll = { scrollLeft: 0, scrollWidth: 640 };
+  pinChartToLatest({ chartScroll: scroll });
+  assert.equal(scroll.scrollLeft, 640);
 });
