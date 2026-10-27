@@ -9,9 +9,41 @@ const turnGroups = new Function(
 )();
 
 const averageSpeed = new Function(
+  "codexPlusUsageSpeedPeak",
   extract("codexPlusUsageDecodeSpeed") + "\n"
+  + extract("codexPlusUsageNumber") + "\n"
   + extract("codexPlusUsageAverageSpeed") + "\nreturn codexPlusUsageAverageSpeed;",
+)(400);
+
+const settledSpeed = new Function(
+  extract("codexPlusUsageDecodeSpeed") + "\n"
+  + extract("codexPlusUsageNumber") + "\n"
+  + extract("codexPlusUsageSettledSpeed") + "\nreturn codexPlusUsageSettledSpeed;",
 )();
+
+const settlement = new Function(
+  "codexPlusUsageMaxLiveSamples",
+  [
+    extract("codexPlusUsageNumber"),
+    extract("codexPlusUsageCreateTurn"),
+    extract("codexPlusUsageFlushDecode"),
+    extract("codexPlusUsageSettleCall"),
+  ].join("\n")
+    + "\nreturn { createTurn: codexPlusUsageCreateTurn, flush: codexPlusUsageFlushDecode, settle: codexPlusUsageSettleCall };",
+)(512);
+
+const modelWindowSpeed = new Function(
+  "codexPlusUsageSpeedPeak",
+  [
+    extract("codexPlusUsageNumber"),
+    extract("codexPlusUsageClamp"),
+    extract("codexPlusUsageMergedDuration"),
+    extract("codexPlusUsageDecodeSpeed"),
+    extract("codexPlusUsageSettledSpeed"),
+    extract("codexPlusUsageModelWindowSpeed"),
+  ].join("\n")
+    + "\nreturn codexPlusUsageModelWindowSpeed;",
+)(400);
 
 test("按轮次汇总调用次数与 token", () => {
   const groups = turnGroups([
@@ -41,8 +73,164 @@ test("没有轮次 id 的实时数据仍进入图表", () => {
   assert.equal(groups[0].tokens, 12);
 });
 
-test("平均速度使用本轮多次调用的输出与解码时间总和", () => {
-  assert.equal(averageSpeed(1800, 10000), 180);
-  assert.equal(averageSpeed(0, 10000), null);
-  assert.equal(averageSpeed(1800, 0), null);
+test("已结算调用的累计吞吐速度", () => {
+  const calls = [
+    { output: 210, decodeMs: 1189 },
+    { output: 7712, decodeMs: 37424 },
+  ];
+  assert.equal(settledSpeed(calls), 7922 / 38.613);
+  assert.equal(settledSpeed([]), null);
+  assert.equal(settledSpeed([{ output: 0, decodeMs: 1000 }]), null);
+});
+
+test("平均速度过滤峰值外样本后取平均", () => {
+  const calls = [
+    { output: 500, decodeMs: 1000 },
+    { output: 100, decodeMs: 1000 },
+    { output: 150, decodeMs: 1000 },
+    { output: 100, decodeMs: 1000 },
+    { output: 2704, decodeMs: 1000 },
+  ];
+  // 2704 超过峰值上限被丢弃；500/100/150/100 去掉极值后只剩 100/100。
+  assert.equal(averageSpeed(calls), 100);
+  assert.equal(averageSpeed(calls.slice(0, 3)), 125);
+  assert.equal(averageSpeed([]), null);
+  assert.equal(averageSpeed([{ output: 100, decodeMs: 0 }]), null);
+});
+
+test("样本不足三个时平均速度就是逐次速率的平均", () => {
+  const calls = [
+    { output: 100, decodeMs: 1000 },
+    { output: 200, decodeMs: 1000 },
+  ];
+  assert.equal(averageSpeed(calls), 150);
+});
+
+test("用量通知晚于解码结束时仍与本次调用时长配对", () => {
+  const turn = settlement.createTurn("t1", "turn-1", 0);
+  turn.decodeStartedAt = 0;
+  settlement.flush(turn, 10000);
+  turn.pendingOutput = 900;
+  settlement.settle(turn);
+  assert.deepEqual(turn.settledCalls, [{ output: 900, decodeMs: 10000 }]);
+
+  const reverse = settlement.createTurn("t2", "turn-2", 0);
+  reverse.decodeStartedAt = 0;
+  reverse.pendingOutput = 500;
+  settlement.flush(reverse, 2000);
+  assert.deepEqual(reverse.settledCalls, [{ output: 500, decodeMs: 2000 }]);
+});
+
+test("主指标剔除首 token 等待与工具执行时间", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: 100_000,
+    firstTokenAt: 4_000,
+    outputTokens: 9_600,
+    toolIntervals: [[10_000, 40_000]],
+    settledCalls: [],
+  };
+  // 窗口 = 100s − 4s TTFT − 30s 工具 = 66s；9600 / 66 = 145.45
+  assert.equal(modelWindowSpeed(turn, 100_000), 9600 / 66);
+});
+
+test("没有 delta 与工具事件的会话仍给出可用速度", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: 100_000,
+    firstTokenAt: null,
+    outputTokens: 5_000,
+    toolIntervals: [],
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(turn, 100_000), 50);
+});
+
+test("工具执行中速度不随时间衰减", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: null,
+    firstTokenAt: 4_000,
+    outputTokens: 9_600,
+    toolIntervals: [[10_000, 20_000]],
+    activeTools: new Map([["tool-1", { startedAt: 30_000 }]]),
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(turn, 30_000), modelWindowSpeed(turn, 60_000));
+});
+
+test("模型窗口不超过 400 tok/s 峰值", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: null,
+    firstTokenAt: 0,
+    outputTokens: 2_000,
+    toolIntervals: [[0, 7_500]],
+    activeTools: new Map(),
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(turn, 10_000), 400);
+});
+
+test("模型窗口峰值内保留实际速度", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: 20_000,
+    firstTokenAt: 0,
+    outputTokens: 8_000,
+    toolIntervals: [],
+    activeTools: new Map(),
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(turn, 20_000), 400);
+});
+
+test("新一轮不继承上一轮速度", () => {
+  const nextTurn = {
+    startedAt: 200_000,
+    completedAt: null,
+    firstTokenAt: null,
+    outputTokens: 0,
+    toolIntervals: [],
+    activeTools: new Map(),
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(nextTurn, 200_500), null);
+});
+
+test("历史回填的轮次不伪造速度", () => {
+  const seeded = {
+    startedAt: 0,
+    completedAt: 100_000,
+    firstTokenAt: null,
+    outputTokens: 50_000,
+    toolIntervals: [],
+    activeTools: new Map(),
+    settledCalls: [],
+    historySeeded: true,
+  };
+  assert.equal(modelWindowSpeed(seeded, 100_000), null);
+});
+
+test("无 item_started 时不为工具编造起止时间", () => {
+  const recordTool = new Function(
+    extract("codexPlusUsageNumber") + "\n"
+    + extract("codexPlusUsageRecordTool") + "\nreturn codexPlusUsageRecordTool;",
+  )();
+  const turn = { toolIntervals: [], toolDetails: [] };
+  const kind = { key: "command", fallback: "Command", label: "Command", detail: "" };
+
+  // 没有 startedAt、没有 durationMs：只记明细，不写区间。
+  recordTool(turn, "call-1", kind, null, 50_000, null);
+  assert.deepEqual(turn.toolIntervals, []);
+  assert.equal(turn.toolDetails.length, 1);
+  assert.equal(turn.toolDetails[0].startedAt, null);
+
+  // 有 durationMs 时用实测时长反推起点。
+  recordTool(turn, "call-2", kind, null, 50_000, 3_000);
+  assert.deepEqual(turn.toolIntervals, [[47_000, 50_000]]);
+
+  // durationMs 优先于事件间隔，避免跨段拉长。
+  recordTool(turn, "call-3", kind, 10_000, 50_000, 2_000);
+  assert.deepEqual(turn.toolIntervals.at(-1), [48_000, 50_000]);
 });

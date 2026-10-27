@@ -57,6 +57,15 @@ test("吞吐量显示规则与 DSH 一致", () => {
   assert.equal(formatSpeed(9.84), "9.8");
 });
 
+test("小量 token 显示实际值而不是 0.00 M", () => {
+  const formatM = new Function(
+    extract("codexPlusUsageFormatM") + "\nreturn codexPlusUsageFormatM;",
+  )();
+  assert.equal(formatM(1096), "1096");
+  assert.equal(formatM(12000), "0.01 M");
+  assert.equal(formatM(1500000), "1.50 M");
+});
+
 test("万单位低于十万时保留一位小数", () => {
   assert.equal(wanNumber(2200), 0.2);
   assert.equal(wanNumber(330000), 33);
