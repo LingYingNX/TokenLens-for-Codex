@@ -10,12 +10,16 @@ const baseState = {
   historyError: "",
   globalUsageLoading: false,
   globalUsageError: "",
+  magpieUsageError: "",
   historyFetchedAt: 1,
   toolExpanded: false,
   tokenExpanded: false,
   customStart: "",
   customEnd: "",
   globalUsageCoverage: { available: 0, total: 0 },
+  globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+  magpieUsage: { fetchedAt: 0, snapshots: new Map(), sessions: new Map() },
+  magpieUsageMaxAgeMs: 30_000,
 };
 const fingerprintSource = [
   "function codexPlusUsageText(){return {labels:{task:'任务消耗',today:'今天消耗',yesterday:'昨天消耗',week:'近7天消耗',custom:'区间消耗'}};}",
@@ -26,6 +30,10 @@ const fingerprintSource = [
   extract("codexPlusUsageIsGlobalRange"),
   extract("codexPlusUsageBeijingDate"),
   extract("codexPlusUsageGlobalDateKeys"),
+  extract("codexPlusUsageNormalizeGlobalDay"),
+  extract("codexPlusUsageGlobalAggregate"),
+  extract("codexPlusUsageTaskUsage"),
+  extract("codexPlusUsageSelectedUsage"),
   extract("codexPlusUsageGlobalTotal"),
   extract("codexPlusUsageSelectedConsumption"),
   extract("codexPlusUsageRenderFingerprint"),
@@ -64,5 +72,17 @@ test("全局加载和错误状态变化会触发重绘", () => {
   assert.notEqual(
     first,
     compileFingerprint({ ...baseState, globalUsageError: "failed" })(baseSnapshot, baseContext),
+  );
+});
+
+test("全局数据来源变化会触发重绘", () => {
+  const fingerprint = compileFingerprint({ ...baseState });
+  const first = fingerprint(baseSnapshot, baseContext);
+  assert.notEqual(
+    first,
+    compileFingerprint({
+      ...baseState,
+      globalUsageSourceCoverage: { magpie: 1, daily: 0 },
+    })(baseSnapshot, baseContext),
   );
 });

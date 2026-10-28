@@ -7,12 +7,15 @@ const { extract } = require("./helpers");
 const total = new Function(
   "codexPlusUsageState",
   [
+    extract("codexPlusUsageNumber"),
     extract("codexPlusUsageBeijingDate"),
     extract("codexPlusUsageBeijingDayStart"),
     extract("codexPlusUsageRangeBounds"),
     extract("codexPlusUsageIsGlobalRange"),
     extract("codexPlusUsageBeijingDateKey"),
     extract("codexPlusUsageGlobalDateKeys"),
+    extract("codexPlusUsageNormalizeGlobalDay"),
+    extract("codexPlusUsageGlobalAggregate"),
     extract("codexPlusUsageGlobalTotal"),
   ].join("\n") + "\nreturn codexPlusUsageGlobalTotal;",
 )({

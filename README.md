@@ -15,6 +15,7 @@
 - 显示本轮平均速度、调用次数与轮数
 - 工具执行按记忆库、Skills、MCP、Hook、命令执行等类别汇总
 - 支持任务、今天、昨天、近 7 天和自定义区间消耗
+- 直接读取 Magpie 的 Codex 实时请求数据；Magpie 不可用时回退 Codex 日报
 - 支持亮色、暗色主题切换
 - 单文件外置脚本，无需重新构建 Codex++
 
@@ -78,7 +79,7 @@ curl -fsSL "https://raw.githubusercontent.com/LingYingNX/TokenLens-for-Codex/mai
 
 ## 说明
 
-数据来自 Codex 本地事件、会话记录与每日消耗数据，不上传会话内容。页面刷新后，状态栏会在下一次模型或工具事件到达时恢复。跨会话历史以每日数据源实际保留的日期为准；覆盖不足时，消耗标签会显示可用天数。
+数据来自 Codex 本地事件、会话记录与每日消耗数据，不上传会话内容。检测到本机 Magpie 时，会通过 Codex++ 官方 HTTP fetch 服务只读请求 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1` 与 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1`，当前任务再按 `q=<threadId>` 取同一 Codex 口径的累计；每 2 秒刷新任务、今天、昨天与近 7 天的明细和总量，旧版宿主才回退到 Electron bridge。TokenLens 不读取其他插件的缓存；日期超出 Magpie 7 日窗口时才回退 Codex 日报的本地快照。汇总只统计 `codex` Agent，Token 合计为 `input + output + cache_read`，排除后台 `hindsight` 等非任务调用。页面刷新后，状态栏会在下一次模型或工具事件到达时恢复。覆盖不足时，消耗标签会显示可用天数。
 
 ## 许可证
 
