@@ -13,9 +13,9 @@
 - 查看上下文占用、输入、输出、缓存读取与缓存命中
 - 查看单次调用柱状图、最近调用与单次最大输出 TOP 3
 - 显示本轮平均速度、调用次数与轮数
-- 工具执行按记忆库、Skills、MCP、Hook、命令执行等类别汇总
+- 工具执行按记忆库、Skills、MCP、Hook、图像生成、网页搜索、代码审查、等待、上下文压缩与其他工具汇总；命令、文件、图像查看、智能体和动态调用并入其他工具，Skills/MCP 显示来源名
 - 支持任务、今天、昨天、近 7 天和自定义区间消耗
-- 直接读取 Magpie 的 Codex 实时请求数据；Magpie 不可用时回退 Codex 日报
+- 直接读取 Magpie 的 Codex 实时请求数据，并把每日结果写入 TokenLens 自有本地账本；Magpie 不可用时优先读取账本
 - 支持亮色、暗色主题切换
 - 单文件外置脚本，无需重新构建 Codex++
 
@@ -55,6 +55,8 @@ TokenLens 只读取 Codex 本地事件与用量通知，不读取或上传会话
 - 超过 `400 tok/s` 的样本视为事件截断产生的失真值，不进入平均速度。
 - 有效样本不超过 2 个时直接取这些样本的算术平均；没有有效样本时显示 `--`。
 
+实时轮次没有 delta 时，会先用真实起止时间减去 TTFT 与工具耗时得到模型窗口；历史回填或工具覆盖整个窗口时，再退回按 token usage 样本或轮次墙钟计算的保守均速。这样轮次结束后不会因为宿主漏发 delta 而永久显示 `--`。
+
 速度值大于等于 `10 tok/s` 时显示整数，小于 `10 tok/s` 时保留一位小数。页面热重载会清空当前轮的内存时间线，状态栏会在下一次模型或工具事件到达后恢复。
 
 ## 安装
@@ -79,7 +81,11 @@ curl -fsSL "https://raw.githubusercontent.com/LingYingNX/TokenLens-for-Codex/mai
 
 ## 说明
 
-数据来自 Codex 本地事件、会话记录与每日消耗数据，不上传会话内容。检测到本机 Magpie 时，会通过 Codex++ 官方 HTTP fetch 服务只读请求 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1` 与 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1`，当前任务再按 `q=<threadId>` 取同一 Codex 口径的累计；每 2 秒刷新任务、今天、昨天与近 7 天的明细和总量，旧版宿主才回退到 Electron bridge。TokenLens 不读取其他插件的缓存；日期超出 Magpie 7 日窗口时才回退 Codex 日报的本地快照。汇总只统计 `codex` Agent，Token 合计为 `input + output + cache_read`，排除后台 `hindsight` 等非任务调用。页面刷新后，状态栏会在下一次模型或工具事件到达时恢复。覆盖不足时，消耗标签会显示可用天数。
+数据来自 Codex 本地事件、会话记录与每日消耗数据，不上传会话内容。检测到本机 Magpie 时，会通过 Codex++ 官方 HTTP fetch 服务只读请求 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1` 与 `http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1`，当前任务再按 `q=<threadId>` 取同一 Codex 口径的累计；每 2 秒刷新任务、今天、昨天与近 7 天的明细和总量，旧版宿主才回退到 Electron bridge。TokenLens 不读取其他插件的缓存。汇总只统计 `codex` Agent，Token 合计为 `input + output + cache_read`，排除后台 `hindsight` 等非任务调用。页面刷新后，状态栏会在下一次模型或工具事件到达时恢复。覆盖不足时，消耗标签会显示可用天数。
+
+### 每日账本
+
+每次成功读取 Magpie 后，TokenLens 会把每个北京时间日期的 `input`、`cache_read`、`output`、总量和调用次数写入浏览器 `localStorage` 的 `tokenlens-daily-usage`。账本保留最近 60 天，同一天只增不减，避免某个回退源突然变小或清空历史。Magpie 暂时不可用、宿主升级导致 RPC 资源换名，或旧会话文件被系统清理时，插件直接使用自己的账本，不再扫描所有会话文件重新结算。只有清除 Codex++ 的站点数据或手动删除这个键时，账本才会丢失。
 
 ## 许可证
 

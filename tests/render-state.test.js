@@ -17,7 +17,7 @@ const baseState = {
   customStart: "",
   customEnd: "",
   globalUsageCoverage: { available: 0, total: 0 },
-  globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+  globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
   magpieUsage: { fetchedAt: 0, snapshots: new Map(), sessions: new Map() },
   magpieUsageMaxAgeMs: 30_000,
 };
@@ -82,7 +82,7 @@ test("全局数据来源变化会触发重绘", () => {
     first,
     compileFingerprint({
       ...baseState,
-      globalUsageSourceCoverage: { magpie: 1, daily: 0 },
+      globalUsageSourceCoverage: { magpie: 1, ledger: 0, daily: 0 },
     })(baseSnapshot, baseContext),
   );
 });

@@ -47,7 +47,7 @@ test("Magpie 日序列保留非缓存输入、缓存读取和总量", () => {
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageMagpieSnapshots } = compile(state);
@@ -79,7 +79,7 @@ test("Magpie 会话保留完整任务累计", () => {
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageMagpieSessions } = compile(state);
@@ -163,7 +163,7 @@ test("Magpie 新鲜数据优先，缺失日期回退每日快照", () => {
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageGlobalAggregate, codexPlusUsageGlobalTotal } = compile(state);
@@ -198,9 +198,9 @@ test("Magpie 新鲜数据优先，缺失日期回退每日快照", () => {
     output: 10,
     hitRate: 80 / 90,
   });
-  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 1, daily: 0 });
+  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 1, ledger: 0, daily: 0 });
   assert.equal(codexPlusUsageGlobalTotal("week", now, daily, magpie), 550);
-  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 2, daily: 5 });
+  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 2, ledger: 0, daily: 5 });
   assert.deepEqual(state.globalUsageCoverage, { available: 7, total: 7 });
 });
 
@@ -210,7 +210,7 @@ test("Magpie 过期或缺失时回退本地日报", () => {
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageGlobalTotal } = compile(state);
@@ -220,7 +220,7 @@ test("Magpie 过期或缺失时回退本地日报", () => {
     snapshots: new Map([["2026-10-28", { total: 100 }]]),
   };
   assert.equal(codexPlusUsageGlobalTotal("today", now, daily, stale), 10);
-  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 0, daily: 1 });
+  assert.deepEqual(state.globalUsageSourceCoverage, { magpie: 0, ledger: 0, daily: 1 });
   assert.equal(
     codexPlusUsageGlobalTotal("today", now, null, {
       fetchedAt: now,
@@ -236,7 +236,7 @@ test("今天、昨天和近 7 天共享同一套输入输出缓存字段", () =>
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageGlobalAggregate } = compile(state);
@@ -264,7 +264,7 @@ test("本地日报 input 含缓存时也归一为非缓存输入", () => {
     customStart: "",
     customEnd: "",
     globalUsageCoverage: { available: 0, total: 0 },
-    globalUsageSourceCoverage: { magpie: 0, daily: 0 },
+    globalUsageSourceCoverage: { magpie: 0, ledger: 0, daily: 0 },
     magpieUsageMaxAgeMs: 30_000,
   };
   const { codexPlusUsageGlobalAggregate } = compile(state);
@@ -358,6 +358,9 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
     "codexPlusUsageMagpieTaskUsageUrlPrefix",
     "codexPlusUsageMagpieRefreshMs",
     "codexPlusUsageMagpieTimeoutMs",
+    "codexPlusUsageDailyLedgerKey",
+    "codexPlusUsageDailyLedgerVersion",
+    "codexPlusUsageDailyLedgerMaxDays",
     [
       extract("codexPlusUsageNumber"),
       extract("codexPlusUsageNormalizeThreadId"),
@@ -371,6 +374,12 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
       extract("codexPlusUsageMagpieTodaySnapshot"),
       extract("codexPlusUsageMagpieTaskSession"),
       extract("codexPlusUsageBridgeGetJson"),
+      extract("codexPlusUsageNormalizeGlobalDay"),
+      extract("codexPlusUsageEmptyDailyLedger"),
+      extract("codexPlusUsageNormalizeDailyLedgerDay"),
+      extract("codexPlusUsageReadDailyLedger"),
+      extract("codexPlusUsageWriteDailyLedger"),
+      extract("codexPlusUsageMergeDailyLedger"),
       extract("codexPlusUsageRefreshMagpieUsage"),
     ].join("\n") + "\nreturn codexPlusUsageRefreshMagpieUsage;",
   )(
@@ -381,6 +390,9 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
     "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1&q=",
     2000,
     3000,
+    "tokenlens-daily-usage",
+    1,
+    60,
   );
   const result = await refresh(true);
   assert.deepEqual(result, { ok: true, changed: true });
@@ -392,6 +404,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
   ]);
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.equal(state.magpieUsage.snapshots.get("2026-10-28").total, 34);
+  assert.equal(state.dailyLedger.days["2026-10-28"].total, 34);
   assert.equal(state.magpieUsage.sessions.get("01a18080-9345-7b90-8798-f827758fe0db").total, 34);
 });
 
@@ -405,6 +418,8 @@ test("宿主资源尚未加载时不缓存空的 appServices 结果", async () =
     [
       extract("codexPlusUsageAbsoluteUrl"),
       extract("codexPlusUsageCollectAssetUrls"),
+      extract("codexPlusUsageAssetRpcUrls"),
+      extract("codexPlusUsageDiscoverRpcAssetUrls"),
       extract("codexPlusUsageResolveAppServices"),
     ].join("\n") + "\nreturn codexPlusUsageResolveAppServices;",
   )(

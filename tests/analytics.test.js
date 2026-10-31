@@ -198,7 +198,7 @@ test("新一轮不继承上一轮速度", () => {
   assert.equal(modelWindowSpeed(nextTurn, 200_500), null);
 });
 
-test("历史回填的轮次不伪造速度", () => {
+test("历史回填没有 delta 时按观察到的墙钟窗口给出保守速度", () => {
   const seeded = {
     startedAt: 0,
     completedAt: 100_000,
@@ -208,8 +208,60 @@ test("历史回填的轮次不伪造速度", () => {
     activeTools: new Map(),
     settledCalls: [],
     historySeeded: true,
+    observedFromStart: false,
   };
-  assert.equal(modelWindowSpeed(seeded, 100_000), null);
+  assert.equal(modelWindowSpeed(seeded, 100_000), 400);
+});
+
+test("实时轮次缺 delta 时历史回填仍使用真实起止时间计算速度", () => {
+  const seeded = {
+    startedAt: 0,
+    completedAt: 100_000,
+    firstTokenAt: null,
+    outputTokens: 5_000,
+    toolIntervals: [],
+    activeTools: new Map(),
+    settledCalls: [],
+    historySeeded: true,
+    observedFromStart: true,
+  };
+  assert.equal(modelWindowSpeed(seeded, 100_000), 50);
+});
+
+test("实时轮次没有 token usage 时结束后需要回填历史", () => {
+  const needsHistoryRefresh = new Function(
+    extract("codexPlusUsageNeedsHistoryRefresh") + "\nreturn codexPlusUsageNeedsHistoryRefresh;",
+  )();
+  assert.equal(needsHistoryRefresh({
+    historySeeded: false,
+    observedFromStart: true,
+    usageSamples: 0,
+  }), true);
+  assert.equal(needsHistoryRefresh({
+    historySeeded: false,
+    observedFromStart: true,
+    usageSamples: 3,
+    outputTokens: 100,
+  }), false);
+  assert.equal(needsHistoryRefresh({
+    historySeeded: true,
+    observedFromStart: true,
+    usageSamples: 3,
+    outputTokens: 0,
+  }), true);
+});
+
+test("工具覆盖整个窗口时退回轮次墙钟均速", () => {
+  const turn = {
+    startedAt: 0,
+    completedAt: 100_000,
+    firstTokenAt: 0,
+    outputTokens: 5_000,
+    toolIntervals: [[0, 100_000]],
+    activeTools: new Map(),
+    settledCalls: [],
+  };
+  assert.equal(modelWindowSpeed(turn, 100_000), 50);
 });
 
 test("无 item_started 时不为工具编造起止时间", () => {
