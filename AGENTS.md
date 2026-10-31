@@ -1,6 +1,6 @@
 <!-- FOR AI AGENTS - Human readability is a side effect, not a goal -->
 <!-- Managed by agent: keep sections and order; edit content, not structure -->
-<!-- Last updated: 2026-10-28 | Last verified: 2026-10-28 -->
+<!-- Last updated: 2026-10-31 | Last verified: 2026-10-31 -->
 
 # AGENTS.md
 
@@ -60,6 +60,7 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - Live ranges use TokenLens's own Codex-only Magpie requests below; never reuse another plugin's cached Magpie usage. `window.__codexDailyTokenUsage.getSnapshot(dateKey)` is only a fallback for dates outside Magpie's seven-day window.
 - Do not read full rollout files directly through internal `workspaceFiles.read`.
 - Usage deltas come from `last_token_usage`; history dedupe keys on the cumulative `contextUsed`.
+- Throughput uses token-weighted settled per-call decode windows. The whole-turn window is only a fallback when no settled call timeline exists.
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
 - Every node this script inserts must carry `data-codex-plus-ext`.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
@@ -68,6 +69,7 @@ The market branch is only a submission copy. Do not treat it as the source branc
 
 - Tests extract named functions from the shipped `tokenlens.js`. If a function name or signature changes, update the matching `extract()` call.
 - Usage changes must cover adjacent replay, out-of-order replay, normal growth, missing cumulative values and live per-call samples.
+- Speed changes must cover per-call weighting, the 3-second recent window, `1000 ms` / `30` token rejection, the `400 tok/s` cap and `--` fallback.
 - Chart changes must preserve scale thresholds, chronological ordering, the latest-200 render window and full-sample TOP ranking.
 - Run `tests/artifact-sync.test.js` after any `tokenlens.js` edit.
 - There is no DOM-level automation. UI changes need manual verification in a running Codex++.
@@ -95,3 +97,4 @@ No scoped `AGENTS.md` files exist. Add one when a directory gains its own rules.
 - Magpie totals are filtered to the `codex` agent and match the Magpie Requests page's Codex view; other agents such as `hindsight` are excluded.
 - The call chart renders at most the latest 200 calls; TOP 3 still ranks the complete merged sample set.
 - In-memory state keeps at most 32 threads and 512 live call samples.
+- Provider batches shorter than `1000 ms` or `30` output tokens are ignored for speed; the status line may briefly show `--` rather than a synthetic peak.

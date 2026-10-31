@@ -34,7 +34,7 @@
    * 输入框下方吞吐状态栏。
    *
    * 主指标按自有口径：本轮输出 token 除以扣除首 token 等待与工具执行后的模型窗口。
-   * 平均速度按每次已结算调用的速率去掉一个最高、一个最低后再平均。
+   * 平均速度按已结算有效调用的 token 总量除以解码总时长，按 token 与时长加权。
    * 数据来自 Codex app-server 的本地通知，不读取会话正文，也不请求服务商：
    * - 首个非空助手或推理增量为首 token 时间；
    * - 首个输出 delta 开始解码，工具开始或消息完成时结束解码区间；
@@ -70,6 +70,10 @@
   const codexPlusUsagePopoverHideMs = 120;
   // 模型真实峰值约 400 tok/s，仪表盘满偏刻度按此对齐。
   const codexPlusUsageSpeedPeak = 400;
+  // 用量通常按整次调用回传；短于此门槛的样本多是批量推送，不是持续解码速度。
+  const codexPlusUsageSpeedWindowMs = 3000;
+  const codexPlusUsageSpeedMinimumDecodeMs = 1000;
+  const codexPlusUsageSpeedMinimumOutputTokens = 30;
   const codexPlusUsageModelItemTypes = new Set([
     "agentmessage", "plan", "reasoning", "usermessage", "hookprompt", "functioncalloutput",
   ]);
@@ -791,13 +795,15 @@
     turn.decodeMs += duration;
     turn.pendingDecodeMs += duration;
     turn.decodeStartedAt = null;
-    codexPlusUsageSettleCall(turn);
+    codexPlusUsageSettleCall(turn, at);
   }
 
   // 输出 token 与它的解码时长要成对结算；用量通知晚于调用结束也不会拉低分母。
-  function codexPlusUsageSettleCall(turn) {
+  function codexPlusUsageSettleCall(turn, at) {
     if (!turn || !(turn.pendingDecodeMs > 0) || !(turn.pendingOutput > 0)) return;
-    turn.settledCalls.push({ output: turn.pendingOutput, decodeMs: turn.pendingDecodeMs });
+    const call = { output: turn.pendingOutput, decodeMs: turn.pendingDecodeMs };
+    if (Number.isFinite(at)) call.observedAt = at;
+    turn.settledCalls.push(call);
     if (turn.settledCalls.length > codexPlusUsageMaxLiveSamples) {
       turn.settledCalls.splice(0, turn.settledCalls.length - codexPlusUsageMaxLiveSamples);
     }
@@ -1018,7 +1024,7 @@
         const output = previous.output > 0 ? previous.output : outputDelta;
         if (output > 0) {
           turn.pendingOutput += output;
-          codexPlusUsageSettleCall(turn);
+          codexPlusUsageSettleCall(turn, at);
         }
       }
       turn.skipMatchingUsage = false;
@@ -1044,24 +1050,55 @@
     return outputTokens > 0 && decodeMs > 0 ? outputTokens / (decodeMs / 1000) : null;
   }
 
-  function codexPlusUsageSettledSpeed(calls) {
-    let output = 0;
-    let decodeMs = 0;
+  function codexPlusUsageSettledSpeed(calls, now = null, windowMs = 0) {
+    const valid = [];
     for (const call of Array.isArray(calls) ? calls : []) {
       const tokens = codexPlusUsageNumber(call?.output);
       const duration = codexPlusUsageNumber(call?.decodeMs);
-      if (tokens > 0 && duration > 0) {
-        output += tokens;
-        decodeMs += duration;
+      if (tokens < codexPlusUsageSpeedMinimumOutputTokens
+          || duration < codexPlusUsageSpeedMinimumDecodeMs) {
+        continue;
       }
+      const rate = codexPlusUsageDecodeSpeed(tokens, duration);
+      if (rate == null || rate > codexPlusUsageSpeedPeak) continue;
+      valid.push({
+        output: tokens,
+        decodeMs: duration,
+        observedAt: Number.isFinite(call?.observedAt) ? call.observedAt : null,
+      });
+    }
+    if (!valid.length) return null;
+    let selected = valid;
+    if (Number.isFinite(now) && windowMs > 0) {
+      const timed = valid.filter((call) => call.observedAt != null);
+      if (timed.length) {
+        const recent = timed.filter((call) => call.observedAt >= now - windowMs);
+        // 空闲时保持最后一个有效读数，不能让速度自己衰减成假值。
+        selected = recent.length ? recent : [timed[timed.length - 1]];
+      }
+    }
+    let output = 0;
+    let decodeMs = 0;
+    for (const call of selected) {
+      output += call.output;
+      decodeMs += call.decodeMs;
     }
     return codexPlusUsageDecodeSpeed(output, decodeMs);
   }
 
-  // 主指标口径：模型可见窗口吞吐。分母 = 轮时长 − 首 token 等待 − 工具执行，只衡量模型真正在产出的时间。
+  // 主指标优先使用逐调用解码窗口；整轮墙钟只在历史数据缺少调用时间轴时兜底。
   function codexPlusUsageModelWindowSpeed(turn, now) {
     if (!turn) return null;
     const end = turn.completedAt ?? (Number.isFinite(now) ? now : Date.now());
+    const settledCalls = Array.isArray(turn.settledCalls) ? turn.settledCalls : [];
+    if (settledCalls.length) {
+      const settled = codexPlusUsageSettledSpeed(
+        settledCalls,
+        end,
+        codexPlusUsageSpeedWindowMs,
+      );
+      return settled == null ? null : Math.min(settled, codexPlusUsageSpeedPeak);
+    }
     const wallMs = Math.max(0, end - turn.startedAt);
     const ttftMs = turn.firstTokenAt == null
       ? 0
@@ -1073,11 +1110,16 @@
     }
     const toolMs = codexPlusUsageMergedDuration(intervals);
     const windowMs = Math.max(0, wallMs - ttftMs - Math.min(toolMs, wallMs - ttftMs));
-    // 没有任何窗口数据时退回已结算累计，避免无 delta 会话显示 --。
-    const speed = codexPlusUsageDecodeSpeed(turn.outputTokens, windowMs)
-      ?? codexPlusUsageSettledSpeed(turn.settledCalls)
-      // shortcut: 历史回填或工具覆盖整个窗口时用墙钟近似，宿主恢复 decode 事件后应优先走模型窗口。
-      ?? codexPlusUsageDecodeSpeed(turn.outputTokens, wallMs);
+    const outputTokens = codexPlusUsageNumber(turn.outputTokens);
+    if (outputTokens < codexPlusUsageSpeedMinimumOutputTokens) return null;
+    const windowSpeed = windowMs >= codexPlusUsageSpeedMinimumDecodeMs
+      ? codexPlusUsageDecodeSpeed(outputTokens, windowMs)
+      : null;
+    // shortcut: 历史回填或工具覆盖整个窗口时用墙钟近似，宿主恢复 decode 事件后应优先走逐调用窗口。
+    const speed = windowSpeed
+      ?? (wallMs >= codexPlusUsageSpeedMinimumDecodeMs
+        ? codexPlusUsageDecodeSpeed(outputTokens, wallMs)
+        : null);
     // 统计窗口刚跨过一个工具时可能只剩几毫秒；真实峰值约 400 tok/s，超出即视为分母失真。
     return speed == null ? null : Math.min(speed, codexPlusUsageSpeedPeak);
   }
@@ -1090,20 +1132,7 @@
   }
 
   function codexPlusUsageAverageSpeed(calls) {
-    const rates = (Array.isArray(calls) ? calls : [])
-      .map((call) => codexPlusUsageDecodeSpeed(
-        codexPlusUsageNumber(call?.output),
-        codexPlusUsageNumber(call?.decodeMs),
-      ))
-      // 超过已知峰值的样本由事件截断产生，不进入平均值。
-      .filter((rate) => rate != null && rate <= codexPlusUsageSpeedPeak);
-    if (!rates.length) return null;
-    if (rates.length <= 2) {
-      return rates.reduce((total, rate) => total + rate, 0) / rates.length;
-    }
-    const sorted = rates.slice().sort((left, right) => left - right);
-    const trimmed = sorted.slice(1, -1);
-    return trimmed.reduce((total, rate) => total + rate, 0) / trimmed.length;
+    return codexPlusUsageSettledSpeed(calls);
   }
 
   function codexPlusUsageFormatSpeed(value) {
