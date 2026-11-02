@@ -157,6 +157,58 @@ test("任务起始时间从线程 UUIDv7 读取，而不是当前轮时间", () 
   );
 });
 
+test("Magpie 连接失败按 2/4/8/16/30 秒退避", async () => {
+  const delay = new Function(
+    "codexPlusUsageMagpieRefreshMs",
+    "codexPlusUsageMagpieRetryMaxMs",
+    extract("codexPlusUsageMagpieRetryDelayMs") + "\nreturn codexPlusUsageMagpieRetryDelayMs;",
+  )(2000, 30000);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 9].map(delay),
+    [2000, 2000, 4000, 8000, 16000, 30000, 30000],
+  );
+
+  let requests = 0;
+  const state = {
+    disposed: false,
+    threadId: "01a18080-9345-7b90-8798-f827758fe0db",
+    magpieUsage: { fetchedAt: 0, snapshots: new Map(), sessions: new Map() },
+    magpieUsageLastAttemptAt: 0,
+    magpieUsageFailureCount: 0,
+    magpieUsagePromise: null,
+    magpieUsageError: "",
+  };
+  const refresh = new Function(
+    "codexPlusUsageState",
+    "codexPlusUsageMagpieUsageUrl",
+    "codexPlusUsageMagpieTodayUsageUrl",
+    "codexPlusUsageMagpieTaskUsageUrlPrefix",
+    "codexPlusUsageMagpieRefreshMs",
+    "codexPlusUsageMagpieRetryMaxMs",
+    [
+      "function codexPlusUsageNormalizeThreadId(value) { return String(value || ''); }",
+      "async function codexPlusUsageBridgeGetJson() { requests += 1; throw new Error('connect failed'); }",
+      "let requests = 0;",
+      extract("codexPlusUsageMagpieRetryDelayMs"),
+      extract("codexPlusUsageRefreshMagpieUsage"),
+    ].join("\n") + "\nreturn { refresh: codexPlusUsageRefreshMagpieUsage, requests: () => requests };",
+  )(
+    state,
+    "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1",
+    "http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1",
+    "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1&q=",
+    2000,
+    30000,
+  );
+  const failed = await refresh.refresh(false);
+  assert.equal(failed.ok, false);
+  assert.equal(state.magpieUsageFailureCount, 1);
+  assert.equal(refresh.requests(), 3);
+  const blocked = await refresh.refresh(false);
+  assert.equal(blocked.changed, false);
+  assert.equal(refresh.requests(), 3);
+});
+
 test("Magpie 新鲜数据优先，缺失日期回退每日快照", () => {
   const now = Date.parse("2026-10-28T14:00:00+08:00");
   const state = {
@@ -347,6 +399,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
     threadId: "01a18080-9345-7b90-8798-f827758fe0db",
     magpieUsage: { fetchedAt: 0, snapshots: new Map(), sessions: new Map() },
     magpieUsageLastAttemptAt: 0,
+    magpieUsageFailureCount: 3,
     magpieUsagePromise: null,
     magpieUsageError: "",
   };
@@ -357,6 +410,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
     "codexPlusUsageMagpieTodayUsageUrl",
     "codexPlusUsageMagpieTaskUsageUrlPrefix",
     "codexPlusUsageMagpieRefreshMs",
+    "codexPlusUsageMagpieRetryMaxMs",
     "codexPlusUsageMagpieTimeoutMs",
     "codexPlusUsageDailyLedgerKey",
     "codexPlusUsageDailyLedgerVersion",
@@ -374,6 +428,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
       extract("codexPlusUsageMagpieTodaySnapshot"),
       extract("codexPlusUsageMagpieTaskSession"),
       extract("codexPlusUsageBridgeGetJson"),
+      extract("codexPlusUsageMagpieRetryDelayMs"),
       extract("codexPlusUsageNormalizeGlobalDay"),
       extract("codexPlusUsageEmptyDailyLedger"),
       extract("codexPlusUsageNormalizeDailyLedgerDay"),
@@ -389,6 +444,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
     "http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1",
     "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1&q=",
     2000,
+    30000,
     3000,
     "tokenlens-daily-usage",
     1,
@@ -406,6 +462,7 @@ test("Electron bridge 返回直接 fetch-response 时刷新 Magpie 快照", asyn
   assert.equal(state.magpieUsage.snapshots.get("2026-10-28").total, 34);
   assert.equal(state.dailyLedger.days["2026-10-28"].total, 34);
   assert.equal(state.magpieUsage.sessions.get("01a18080-9345-7b90-8798-f827758fe0db").total, 34);
+  assert.equal(state.magpieUsageFailureCount, 0);
 });
 
 test("宿主资源尚未加载时不缓存空的 appServices 结果", async () => {
