@@ -15,6 +15,8 @@ const total = new Function(
     extract("codexPlusUsageBeijingDateKey"),
     extract("codexPlusUsageGlobalDateKeys"),
     extract("codexPlusUsageNormalizeGlobalDay"),
+    extract("codexPlusUsageMagpieSnapshotFreshness"),
+    extract("codexPlusUsageGlobalDayUsage"),
     extract("codexPlusUsageGlobalAggregate"),
     extract("codexPlusUsageGlobalTotal"),
   ].join("\n") + "\nreturn codexPlusUsageGlobalTotal;",

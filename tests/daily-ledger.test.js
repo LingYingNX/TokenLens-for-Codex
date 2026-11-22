@@ -123,6 +123,8 @@ test("账本优先于残缺日报，恢复被回退源压低的消耗", () => {
       extract("codexPlusUsageBeijingDateKey"),
       extract("codexPlusUsageGlobalDateKeys"),
       extract("codexPlusUsageNormalizeGlobalDay"),
+      extract("codexPlusUsageMagpieSnapshotFreshness"),
+      extract("codexPlusUsageGlobalDayUsage"),
       extract("codexPlusUsageGlobalAggregate"),
       extract("codexPlusUsageGlobalTotal"),
     ].join("\n") + "\nreturn { codexPlusUsageGlobalTotal, codexPlusUsageGlobalAggregate };",

@@ -31,6 +31,8 @@ const fingerprintSource = [
   extract("codexPlusUsageBeijingDate"),
   extract("codexPlusUsageGlobalDateKeys"),
   extract("codexPlusUsageNormalizeGlobalDay"),
+  extract("codexPlusUsageMagpieSnapshotFreshness"),
+  extract("codexPlusUsageGlobalDayUsage"),
   extract("codexPlusUsageGlobalAggregate"),
   extract("codexPlusUsageTaskUsage"),
   extract("codexPlusUsageSelectedUsage"),

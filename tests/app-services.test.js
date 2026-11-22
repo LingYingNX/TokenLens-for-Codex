@@ -48,3 +48,75 @@ test("已加载的 RPC 模块不再读取入口资源", async () => {
     ["app://-/assets/rpc-7f414a22e2be.js"],
   );
 });
+
+const webpackServices = new Function(
+  extract("codexPlusUsageWebpackServices") + "\nreturn codexPlusUsageWebpackServices;",
+)();
+
+const usableServices = { httpFetch: { fetch() {} } };
+
+test("rspack 宿主把 appServices 藏在模块缓存里也能取到", () => {
+  const requireFn = Object.assign(() => {
+    throw new Error("不该在缓存命中时 require");
+  }, {
+    c: {
+      aaa: { exports: { other: 1 } },
+      GaA7: { exports: { appServices: usableServices } },
+    },
+    m: {},
+  });
+  assert.equal(webpackServices(requireFn), usableServices);
+});
+
+test("缓存里没有时按工厂源码定位并 require 一次", () => {
+  const requireFn = Object.assign((id) => {
+    assert.equal(id, "Xy12");
+    return { appServices: usableServices };
+  }, {
+    c: {},
+    m: {
+      Xy12: function () { return { appServices: 1 }; },
+      Zz34: function () { return {}; },
+    },
+  });
+  assert.equal(webpackServices(requireFn), usableServices);
+});
+
+test("运行时形状不认识时返回 null，不抛错", () => {
+  assert.equal(webpackServices(undefined), null);
+  assert.equal(webpackServices(() => {}), null);
+  assert.equal(webpackServices({ c: { a: { exports: { appServices: { httpFetch: {} } } } } }), null);
+});
+
+test("HTTP service 与 bridge 都失败时，两条原因都要带出来", async () => {
+  const state = { appServicesPromise: null };
+  const getJson = new Function(
+    "window",
+    "codexPlusUsageMagpieTimeoutMs",
+    "codexPlusUsageState",
+    [
+      extract("codexPlusUsageResolveAppServices"),
+      extract("codexPlusUsageServiceGetJson"),
+      extract("codexPlusUsageBridgeGetJson"),
+    ].join("\n") + "\nreturn codexPlusUsageBridgeGetJson;",
+  )(
+    {
+      electronBridge: {
+        sendMessageFromView() {
+          throw new Error("HTTP requests must use the HTTP fetch service.");
+        },
+      },
+      addEventListener() {},
+      removeEventListener() {},
+      setTimeout,
+      clearTimeout,
+    },
+    3000,
+    state,
+  );
+  await assert.rejects(getJson("http://127.0.0.1:3425/x"), (error) => {
+    assert.match(error.message, /HTTP fetch service/);
+    assert.match(error.message, /codex_desktop:message-from-view|HTTP fetch service/);
+    return true;
+  });
+});

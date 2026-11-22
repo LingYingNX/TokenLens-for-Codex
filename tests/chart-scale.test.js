@@ -9,15 +9,17 @@ const turnGroups = new Function(
 )();
 
 const chartHelpers = new Function(
+  "codexPlusUsageChartAxisWindow",
   [
     extract("codexPlusUsageNumber"),
     extract("codexPlusUsageMergeHistorySamples"),
     extract("codexPlusUsageSampleKey"),
     extract("codexPlusUsageChartCalls"),
+    extract("codexPlusUsageChartAxisMax"),
     extract("codexPlusUsageChartScale"),
-  ].join("\n") + "\nreturn { chartCalls: codexPlusUsageChartCalls, chartScale: codexPlusUsageChartScale };",
-)();
-const { chartCalls, chartScale } = chartHelpers;
+  ].join("\n") + "\nreturn { chartCalls: codexPlusUsageChartCalls, chartAxisMax: codexPlusUsageChartAxisMax, chartScale: codexPlusUsageChartScale };",
+)(20);
+const { chartCalls, chartAxisMax, chartScale } = chartHelpers;
 
 test("柱状图按轮保留单次最大 token", () => {
   const groups = turnGroups([
@@ -69,4 +71,24 @@ test("柱状图刻度从 10 万开始逐级翻倍", () => {
   assert.deepEqual(chartScale(400000), { top: 400000, mid: 200000 });
   assert.deepEqual(chartScale(400001), { top: 800000, mid: 400000 });
   assert.deepEqual(chartScale(800001), { top: 1600000, mid: 800000 });
+});
+
+test("更早的历史峰值不抬高柱状图刻度", () => {
+  const calls = Array.from({ length: 60 }, () => ({ tokens: 460000 }))
+    .concat(Array.from({ length: 20 }, () => ({ tokens: 205000 })));
+  const axis = chartAxisMax(calls);
+  assert.equal(axis, 205000);
+  assert.deepEqual(chartScale(axis), { top: 400000, mid: 200000 });
+  assert.ok(calls.some((item) => item.tokens > chartScale(axis).top));
+});
+
+test("刻度只看最近 20 次", () => {
+  const calls = Array.from({ length: 21 }, (_, index) => ({ tokens: index === 0 ? 900000 : 210000 }));
+  assert.equal(chartAxisMax(calls), 210000);
+});
+
+test("样本不足 20 次时按最大值定档", () => {
+  const calls = [10000, 20000, 30000, 40000, 100000].map((tokens) => ({ tokens }));
+  assert.equal(chartAxisMax(calls), 100000);
+  assert.equal(chartAxisMax([]), 0);
 });
