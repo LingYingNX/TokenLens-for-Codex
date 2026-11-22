@@ -51,6 +51,7 @@ After editing `tokenlens.js`:
 4. The market copy lives in `LingYingNX/CodexPlusPlusScriptMarket` on the active TokenLens submission branch; its `index.json` `version` and `sha256` must match the script.
 5. The market script must be a byte-for-byte copy of the full `tokenlens.js`, including the `// ==UserScript==` header. Never publish the headerless artifacts copy.
 6. Disclose every local or optional data source in the market `index.json` `requirements` / `limitations` and in the PR description. Missing local services need bounded connection retry backoff with test coverage; update the market SHA-256 last.
+7. After pushing, confirm `https://raw.githubusercontent.com/LingYingNX/TokenLens-for-Codex/main/tokenlens.js` returns `200` with the full `// ==UserScript==` header and the intended `@version`. That root file is the only Codex++ install entry point.
 
 The market branch is only a submission copy. Do not treat it as the source branch for this standalone plugin repository.
 
@@ -92,6 +93,8 @@ No scoped `AGENTS.md` files exist. Add one when a directory gains its own rules.
 - Do not modify Codex++ itself; use only its public routes.
 - The only allowed network calls are read-only `GET http://127.0.0.1:3425/v1/magpie/usage/requests?period=30d&agent=codex&limit=1`, `GET http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1`, and the same 7-day request URL with `q=<threadId>` for the current task, through the Codex++ official HTTP fetch service (`appServices.httpFetch`), with the legacy Electron bridge only as an older-host fallback. No other network calls, no session uploads, no API-key access.
 - Keep this standalone repository separate from the market submission branch.
+- The repo root `tokenlens.js` is the Codex++ install entry point (`README.md` installs from its `main` raw URL). Never delete, rename, relocate or header-strip it, and never force-push or prune `main` in a way that drops it; a push that removes install-referenced files breaks installation even when the history still contains them.
+- Before any push, run `git ls-tree -r origin/main --name-only` and confirm every install-referenced file still exists (`tokenlens.js`, `artifacts/codex-plus-throughput-statusline.js`, `artifacts/codex-plus-throughput-preview.png`, `preview.png`, `README.md`, `LICENSE`).
 - Never publish the headerless artifact as the market script.
 - Never commit a version bump, market hash and script content separately.
 - Never change the UserScript `@version` or market `version` without explicit user approval.
