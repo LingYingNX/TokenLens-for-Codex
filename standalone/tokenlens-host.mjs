@@ -321,6 +321,8 @@ async function waitForPage(timeoutMs) {
   return null;
 }
 
+// 只探测 Codex 安装位置用于日志。宿主不再自己启动 Codex——正常启动由用户点图标，
+// 调试端口由 setup-env.ps1 设的环境变量打开。
 async function getPackage() {
   const installLocation = await new Promise((resolve, reject) => {
     execFile(
@@ -340,19 +342,16 @@ async function getPackage() {
   };
 }
 
-// 启动 Codex（带调试端口）。启动不等于杀进程，Codex 没在跑时才用。
-function launchCodex(packageInfo) {
-  const child = spawn(
-    packageInfo.executable,
-    [
-      "--remote-debugging-address=127.0.0.1",
-      "--remote-debugging-port=" + port,
-      "--remote-allow-origins=*",
-    ],
-    { detached: true, stdio: "ignore", windowsHide: true },
-  );
-  child.unref();
-  log("已启动 Codex（调试端口 " + port + "）");
+// 检查 Codex 是否带着调试端口在跑。
+// 正常启动由用户自己点图标，端口靠 setup-env.ps1 设的环境变量打开；
+// 宿主不主动启动 Codex，也绝不杀 Codex。
+async function codexHasDebugPort() {
+  try {
+    const res = await fetch("http://127.0.0.1:" + port + "/json/version", { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function codexRunning() {
@@ -397,18 +396,26 @@ async function activate(cdp) {
 async function main() {
   log("TokenLens 宿主启动（端口 " + port + "）");
   const packageInfo = await getPackage();
+  log("Codex 安装位置: " + packageInfo.installLocation);
 
+  // 等带调试端口的 Codex 出现。用户正常点图标启动即可，端口由环境变量打开。
+  // 这里不能因为「Codex 在跑但没端口」就退出——用户可能是先开了 Codex 才装的插件，
+  // 重启它之后端口就会出现。宿主一直等，只有用户主动卸载才停。
   let page = await waitForPage(2000);
   if (!page) {
-    if (await codexRunning()) {
-      log("Codex 已在运行但没有调试端口。请用桌面快捷方式「TokenLens Codex」重新启动 Codex。");
-      process.exitCode = 1;
-      return;
+    log("等待 Codex 启动（正常点开始菜单 / 桌面图标即可，调试端口由环境变量自动打开）…");
+    let hinted = false;
+    const deadline = Date.now() + 3600000;
+    while (Date.now() < deadline && !page) {
+      await sleep(3000);
+      page = await waitForPage(1000);
+      if (!page && !hinted && (await codexRunning())) {
+        hinted = true;
+        log("检测到 Codex 在运行但没有调试端口：请运行 setup-env.ps1，然后完全退出并重启 Codex。宿主继续等待。");
+      }
     }
-    launchCodex(packageInfo);
-    page = await waitForPage(45000);
     if (!page) {
-      log("Codex 调试端口未就绪，宿主退出（不重试，不打断 Codex）。");
+      log("1 小时内没有等到带调试端口的 Codex，宿主退出。");
       process.exitCode = 1;
       return;
     }
@@ -428,21 +435,16 @@ async function main() {
     } finally {
       if (cdp) cdp.close();
     }
-    // 等 Codex 重新起来。Codex 完全没跑就拉起它；在跑但没端口就只等，绝不杀。
+    // 等 Codex 重新起来（由用户正常启动，宿主只等，绝不杀也绝不代启）。
     log("等待 Codex 重新启动以便再次附着…");
-    const deadline = Date.now() + 300000;
+    const deadline = Date.now() + 3600000;
     let next = null;
     while (Date.now() < deadline && !next) {
       await sleep(3000);
       next = await waitForPage(1000);
-      if (next) break;
-      if (!(await codexRunning())) {
-        launchCodex(packageInfo);
-        await sleep(5000);
-      }
     }
     if (!next) {
-      log("5 分钟内没有等到 Codex，宿主退出。");
+      log("1 小时内没有等到 Codex，宿主退出。");
       process.exitCode = 1;
       return;
     }

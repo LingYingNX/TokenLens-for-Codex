@@ -27,7 +27,7 @@ TokenLens for Codex is a single-file JavaScript user script for the Codex++ rend
 | Test | `node --test tests/*.test.js` |
 | Single test | `node --test tests/analytics.test.js` |
 | Install (manual) | Copy `tokenlens.js` into `%APPDATA%\Codex++\user_scripts\`, then reload the extension |
-| Install (official Codex) | `powershell -ExecutionPolicy Bypass -File .\standalone\install.ps1` |
+| Install (official Codex) | `pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1` |
 | Live check (official Codex) | `node .\standalone\tools\check.mjs` — needs a running Codex with the debug port |
 
 There is no `package.json`, build, lint, format or dependency-install step. Do not invent one.
@@ -41,8 +41,9 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `artifacts/codex-plus-throughput-preview.png` | UI preview used by the market entry |
 | `tests/helpers.js` | Loads `tokenlens.js` and extracts named functions for focused tests |
 | `tests/*.test.js` | Contract and calculation tests for history, live calls, ranking, chart scale, context, global usage, theme and artifact sync |
-| `standalone/tokenlens-host.mjs` | Node host for the official Codex app: launch/attach, CDP injection, rollout history |
+| `standalone/tokenlens-host.mjs` | Node host for the official Codex app: waits for the debug port, attaches, injects over CDP, reads rollout history |
 | `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official Codex app lacks |
+| `standalone/setup-env.ps1` | Sets/clears the env vars that make Codex open the debug port on a normal launch |
 | `standalone/tools/check.mjs` | Live end-to-end check against a running Codex |
 | `README.md` | Install steps and feature list |
 | `preview.png` | Screenshot referenced by the README |
@@ -77,10 +78,16 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
 - `data-codex-plus-ext` marks this script's own DOM (the status-line root) so `codexPlusUsageObserve` skips its own mutations; keep it on any inserted root that mutates often.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
-- The standalone host must never terminate the Codex process. A failed launch ends the host;
-  it must not retry, and it must not `Stop-Process` Codex.
-- Launch the official Codex app through `app/ChatGPT.exe`, never `app/Codex.exe` (the latter is a
-  20KB update trampoline that ignores command-line flags, so the debug port never opens).
+- PowerShell scripts under `standalone/` must be UTF-8 with BOM. Windows PowerShell 5.1 reads
+  BOM-less UTF-8 as ANSI, garbles the Chinese text and breaks quote pairing, so the script fails
+  to parse. `install.ps1` must also prefer `pwsh` over `powershell.exe`.
+- The host never launches Codex and never terminates it. The user starts Codex normally; the host
+  only attaches once the debug port is up.
+- The debug port comes from the official `CODEX_ELECTRON_CHROMIUM_SWITCHES` env var, which the app
+  reads only when `BUILD_FLAVOR=dev`. `setup-env.ps1` sets both. Do not pass
+  `--remote-debugging-port` on the command line instead: that changes how the user starts Codex.
+- `NODE_OPTIONS=--require` cannot patch the Electron main process here: the
+  `EnableNodeOptionsEnvironmentVariable` fuse is disabled, so the file is never loaded.
 - Injection must be idempotent: `tokenlens.js` has no internal guard, so the host checks
   `window.__codexPlusThroughputStatusLineRuntime` before evaluating the script again.
 - `Runtime.addBinding` and `Page.addScriptToEvaluateOnNewDocument` are per CDP session; re-register
@@ -101,8 +108,6 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - Run `tests/artifact-sync.test.js` after any `tokenlens.js` edit.
 - Market release checks must assert the full UserScript metadata header (`@version`, `@match`, `@run-at`), optional data-source disclosure and manifest SHA-256.
 - There is no DOM-level automation. UI changes need manual verification in a running Codex++.
-- Host changes must keep `tests/standalone-host.test.js` green: it pins the no-kill rule, the
-  `ChatGPT.exe` launch target, idempotent injection and per-session binding registration.
 - Run `node standalone/tools/check.mjs` against a live Codex after changing the adapter or the host.
 
 ## Scoped AGENTS.md

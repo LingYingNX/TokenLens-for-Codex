@@ -27,27 +27,32 @@ test("宿主绝不杀 Codex 进程", () => {
   assert.doesNotMatch(host, /CloseMainWindow/i, "宿主不得请求关闭 Codex 主窗口");
 });
 
-test("宿主启动的是 ChatGPT.exe 而不是 Codex.exe", () => {
-  assert.match(host, /app", "ChatGPT\.exe"/, "宿主必须以 ChatGPT.exe 为启动目标");
-  assert.doesNotMatch(host, /app", "Codex\.exe"/, "Codex.exe 是更新器 trampoline，不能作为启动目标");
+test("宿主不自己启动 Codex，只附着等待", () => {
+  // 用户要的是「正常启动 Codex 后脚本在后台生效」，不是换一种启动方式。
+  // 调试端口由 setup-env.ps1 设的环境变量打开，宿主只负责等端口出现后附着。
+  assert.doesNotMatch(host, /spawn\(/, "宿主不得自己启动 Codex 进程");
+  assert.doesNotMatch(host, /launchCodex/, "不得保留代启 Codex 的函数");
+  assert.match(host, /等待 Codex 启动/, "宿主必须等待 Codex 出现");
 });
 
-test("宿主调试端口参数与官方插件一致", () => {
-  assert.match(host, /--remote-debugging-address=127\.0\.0\.1/);
-  assert.match(host, /--remote-debugging-port=/);
-  assert.match(host, /--remote-allow-origins=\*/);
+test("调试端口参数由环境变量脚本配置", () => {
+  // 端口不再由宿主命令行传入（那会改变启动方式），改由官方开关环境变量提供。
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  assert.match(setup, /"remote-debugging-address"\s*=\s*"127\.0\.0\.1"/);
+  assert.match(setup, /"remote-debugging-port"\s*=\s*"9229"/);
+  assert.match(setup, /"remote-allow-origins"\s*=\s*"\*"/);
 });
 
-test("宿主失败时退出而不是重试", () => {
-  // 旧实现是 while(true) { try { ... } catch { sleep 2 } }，失败就无限重启 Codex。
-  // 现在端口没就绪必须直接返回，且不能有「重试启动」的循环。
-  assert.match(host, /宿主退出（不重试，不打断 Codex）/, "端口未就绪必须直接退出");
+test("宿主不会因为 Codex 未启动而退出", () => {
+  // 宿主先于 Codex 启动是常态（开机自启）。它必须一直等，不能误判后退出。
+  assert.doesNotMatch(host, /Codex 已在运行但没有调试端口。.*\n.*process\.exitCode/s, "不得因检测到 Codex 在跑就退出");
+  assert.match(host, /宿主继续等待/, "检测到 Codex 在跑但没端口时应继续等待");
   assert.doesNotMatch(host, /host error:/, "不得再有旧版的无限重试错误分支");
 });
 
-test("宿主只在 Codex 未运行时才启动它", () => {
-  assert.match(host, /if \(!\(await codexRunning\(\)\)\)/, "Codex 在跑时不得重复启动");
+test("宿主检测 Codex 是否在运行但绝不干预它", () => {
   assert.match(host, /async function codexRunning\(\)/);
+  assert.match(host, /async function codexHasDebugPort\(\)/, "必须能判断端口是否已开");
 });
 
 test("宿主支持 CDP 断线后重新附着", () => {
@@ -107,6 +112,36 @@ test("重新附着后必须重新注册宿主桥", () => {
   assert.match(host, /session\.registered/, "注册标记必须是会话级的");
   assert.doesNotMatch(host, /^let registered = false;/m, "不得用模块级注册标记");
   assert.match(host, /register\(cdp, session\)/, "注册必须传入会话对象");
+});
+
+test("环境变量脚本配置官方唯一支持的开关入口", () => {
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  // 官方 app.asar 只在 BUILD_FLAVOR=dev 时读 CODEX_ELECTRON_CHROMIUM_SWITCHES。
+  assert.match(setup, /CODEX_ELECTRON_CHROMIUM_SWITCHES/, "必须设置官方开关环境变量");
+  assert.match(setup, /BUILD_FLAVOR/, "必须设置 BUILD_FLAVOR=dev，否则官方不读开关");
+  assert.match(setup, /remote-debugging-port/, "必须开调试端口");
+  assert.match(setup, /127\.0\.0\.1/, "调试端口只能监听回环地址");
+  assert.match(setup, /-Uninstall/, "必须能撤销环境变量");
+});
+
+test("PowerShell 脚本必须是 UTF-8 BOM", () => {
+  // PS 5.1 按 ANSI 读无 BOM 的 UTF-8，中文乱码会把引号配对搞错，脚本直接语法报错。
+  for (const name of ["install.ps1", "setup-env.ps1"]) {
+    const bytes = readFileSync(path.join(repo, "standalone", name));
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], name + " 必须带 UTF-8 BOM");
+  }
+});
+
+test("安装器优先使用现代 PowerShell", () => {
+  const install = readFileSync(path.join(repo, "standalone", "install.ps1"), "utf8");
+  assert.match(install, /Get-Command pwsh/, "必须优先用 pwsh 而不是 PS 5.1");
+  assert.doesNotMatch(install, /powershell\.exe -NoProfile/, "不得硬编码调用 PS 5.1");
+});
+
+test("安装器不再创建桌面快捷方式", () => {
+  const install = readFileSync(path.join(repo, "standalone", "install.ps1"), "utf8");
+  assert.doesNotMatch(install, /CreateShortcut/, "不再需要启动器快捷方式");
+  assert.match(install, /Register-ScheduledTask/, "仍需注册后台宿主计划任务");
 });
 test("启动脚本用 node 跑宿主", () => {
   assert.match(launcher, /tokenlens-host\.mjs/);

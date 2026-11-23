@@ -2,6 +2,9 @@
 
 把 TokenLens 吞吐状态栏装进**官方 Codex 桌面应用**（不是 Codex++）。
 
+**用法：正常启动 Codex 就行。** 后台宿主常驻，检测到 Codex 起来就自动附着并注入，
+不需要任何启动器、快捷方式或额外操作。
+
 ## 为什么需要这一层
 
 Codex++ 宿主本体已被删除（2026-10-22），而官方 Codex 没有 UserScript 扩展点：
@@ -20,6 +23,38 @@ app.asar 里搜不到 `user_scripts` / `userscript`，插件系统只有 `.codex
 
 适配层 `tokenlens-host-adapter.js` 只补这两条路由，tokenlens.js 本体一行不改。
 
+## 调试端口怎么开的
+
+CDP 注入必须先有调试端口。官方只有一个开关入口，app.asar 里的原文是：
+
+```js
+let a = env.CODEX_ELECTRON_CHROMIUM_SWITCHES?.trim();
+if (buildFlavor !== Dev || !a) return [];   // 只有 Dev flavor 才读这个变量
+```
+
+所以 `setup-env.ps1` 设两个用户级环境变量：
+
+| 变量 | 值 |
+|---|---|
+| `BUILD_FLAVOR` | `dev` |
+| `CODEX_ELECTRON_CHROMIUM_SWITCHES` | `{"remote-debugging-address":"127.0.0.1","remote-debugging-port":"9229","remote-allow-origins":"*"}` |
+
+### dev flavor 的两个副作用（已实测）
+
+1. **app-server 的库换成 `.codex\sqlite\codex-dev.db`**。里面是 169 条完整线程目录，
+   比 prod 的 `codex.db`（14 条近期）更全，**不丢历史**。
+2. **应用内自动更新关闭**（Sparkle / Windows Store updater）。官方 asar 里
+   `shouldIncludeWindowsUpdater` 只在 prod/beta/nightly 等 flavor 启用。
+   微软商店的更新入口不受影响。
+
+### 试过但走不通的路
+
+| 方案 | 结果 |
+|---|---|
+| 命令行 `--remote-debugging-port` | 要改启动方式，等于换了个启动器 |
+| `NODE_OPTIONS=--require` 注入 Electron main 进程 | **Electron fuse 已禁用**（`EnableNodeOptionsEnvironmentVariable = 0`），不执行 |
+| `CODEX_ELECTRON_CHROMIUM_SWITCHES` 单独设 | 官方只在 Dev flavor 读，无效 |
+
 ## 踩过的坑（别再踩）
 
 1. **启动目标必须是 `ChatGPT.exe`**。`Codex.exe` 只有 20KB，是 windows-update trampoline，
@@ -31,23 +66,25 @@ app.asar 里搜不到 `user_scripts` / `userscript`，插件系统只有 `.codex
    宿主在 `activate()` 前先检查 `window.__codexPlusThroughputStatusLineRuntime`。
 4. **不要覆盖 `window.electronBridge`**。官方 bridge 明确拒绝裸 fetch：
    「HTTP requests must use the HTTP fetch service.」覆盖它只会破坏宿主自己的通道。
+5. **PowerShell 脚本要写 UTF-8 with BOM**。PS 5.1 按 ANSI 读无 BOM 的 UTF-8，
+   中文乱码会把引号配对搞错，脚本直接语法报错。
 
-## 用法
-
-### 安装
+## 安装
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\standalone\install.ps1
+pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1
 ```
 
 装完得到：
 
-- 桌面快捷方式 **TokenLens Codex** —— 双击即启动 Codex 并注入 TokenLens。
-- 计划任务 **TokenLens Host** —— 登录 30 秒后附着到已运行的 Codex。
+- 用户级环境变量（`BUILD_FLAVOR` / `CODEX_ELECTRON_CHROMIUM_SWITCHES`）。
+- 计划任务 `TokenLens Host` —— 登录 30 秒后常驻等待 Codex。
 
-卸载：`powershell -ExecutionPolicy Bypass -File .\standalone\install.ps1 -Uninstall`
+**重启 Codex**（环境变量在进程启动时读取），之后正常用就行。
 
-### 手动运行
+卸载：`pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1 -Uninstall`
+
+## 手动运行
 
 ```powershell
 node .\standalone\tokenlens-host.mjs
@@ -55,14 +92,14 @@ node .\standalone\tokenlens-host.mjs
 
 宿主行为：
 
-- Codex 没在跑 → 用调试端口启动它。
-- Codex 在跑但没调试端口 → **不打断它**，只提示你用桌面快捷方式重启。
-- CDP 断开（Codex 被你手动关掉）→ 等它回来并重新附着。
-- 端口始终起不来 → 记录日志后退出，**不循环重启**。
+- Codex 没在跑 → 等着。
+- Codex 在跑但没端口 → 提示去跑 `setup-env.ps1` 并重启，**继续等**，不退出也不打断。
+- CDP 断开（Codex 被手动关掉）→ 等它回来并重新附着。
+- 端口始终起不来 → 记日志后退出，**不循环重启**。
 
 日志：`standalone/tokenlens-host.log`
 
-### 验证
+## 验证
 
 ```powershell
 node .\standalone\tools\check.mjs
@@ -71,21 +108,16 @@ node .\standalone\tools\check.mjs
 对着正在运行的 Codex 跑，输出 6 项检查（适配层、运行时、单实例、事件链、Magpie、线程历史）。
 全绿退出码为 0。状态栏只在**线程页**显示，验证前先用 `tools/enter-thread.mjs` 跳到线程。
 
-### 环境变量
-
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `TOKENLENS_CDP_PORT` | `9229` | CDP 端口 |
-
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `tokenlens-host.mjs` | Node 宿主：启动/附着 Codex、CDP 注入、读 rollout 算线程历史 |
+| `tokenlens-host.mjs` | Node 宿主：等待/附着 Codex、CDP 注入、读 rollout 算线程历史 |
 | `tokenlens-host-adapter.js` | renderer 适配层：补 `codexPlus` / `__codexSessionDeleteBridge` |
-| `start-tokenlens.cmd` | 启动器 |
+| `setup-env.ps1` | 设置/撤销环境变量 |
 | `install.ps1` | 安装/卸载器 |
-| `tools/check.mjs` | 端到端验证：对着正在运行的 Codex 查状态栏、事件链、用量源 |
+| `start-tokenlens.cmd` | 手动启动宿主用 |
+| `tools/check.mjs` | 端到端验证 |
 | `tools/cdp.mjs` | 最小 CDP 客户端（只用 Node 内置 WebSocket/fetch） |
 | `tools/enter-thread.mjs` | 辅助：跳到线程页（状态栏只在有 threadId 时渲染） |
 
@@ -95,5 +127,5 @@ node .\standalone\tools\check.mjs
   压缩切换后分段历史仍可能不全。
 - Magpie 用量完全依赖 `http://127.0.0.1:3425` 在跑；没起来时状态栏的用量区显示空。
 - 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示，这是插件原有行为。
-- 注入需要 `--remote-debugging-port`，等于开了本地调试端口。只监听 127.0.0.1，
-  且 `--remote-allow-origins=*` 只对本地 CDP 生效。介意的话别用这个方案。
+- 注入需要本地调试端口，只监听 127.0.0.1。介意的话别用这个方案。
+- dev flavor 下 Codex 应用内不弹更新提示，得从微软商店更新。

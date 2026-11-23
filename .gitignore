@@ -12,3 +12,6 @@ artifacts/tmp/
 standalone/tokenlens-host.log
 standalone/tokenlens-host.log.legacy
 
+
+# 本机环境变量原值快照（撤销用）。
+standalone/env-state.json
