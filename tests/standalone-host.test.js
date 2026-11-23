@@ -70,9 +70,15 @@ test("宿主注入是幂等的", () => {
 
 test("宿主路由实现了线程用量历史", () => {
   assert.match(host, /\/thread-usage-history/, "必须实现 /thread-usage-history");
-  assert.match(host, /readThreadUsageHistory/);
-  assert.match(host, /contextLimit/, "历史行必须带上下文窗口");
-  assert.match(host, /contextUsed/, "历史行必须带上下文占用");
+  assert.match(host, /readThreadUsageHistory/, "必须调用历史解析模块");
+  assert.match(host, /import \{ readThreadUsageHistory \} from "\.\/rollout-history\.mjs"/, "历史解析必须在独立模块里");
+});
+
+test("宿主不用 token_count 的累计量当单次调用量", () => {
+  // 踩过的坑：token_count.info.total_token_usage 是线程累计量（该线程已到 9167 万），
+  // 喂给 tokenlens.js 会让 TOP3 显示「9167.95万」这种不可能的单次调用。
+  assert.doesNotMatch(host, /total_token_usage/, "宿主不得使用累计量当单次调用量");
+  assert.doesNotMatch(host, /token_count/, "宿主不得解析 token_count 事件");
 });
 
 test("适配层提供 tokenlens.js 依赖的宿主路由", () => {

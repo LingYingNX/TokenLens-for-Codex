@@ -44,6 +44,7 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `standalone/tokenlens-host.mjs` | Node host for the official Codex app: waits for the debug port, attaches, injects over CDP, reads rollout history |
 | `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official Codex app lacks |
 | `standalone/setup-env.ps1` | Sets/clears the env vars that make Codex open the debug port on a normal launch |
+| `standalone/rollout-history.mjs` | Rebuilds thread usage history from rollout files (per-call token amounts) |
 | `standalone/tools/check.mjs` | Live end-to-end check against a running Codex |
 | `README.md` | Install steps and feature list |
 | `preview.png` | Screenshot referenced by the README |
@@ -73,6 +74,12 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - Live ranges use TokenLens's own Codex-only Magpie requests below; never reuse another plugin's cached Magpie usage. The series request asks for Magpie's 30-day window so custom ranges can reach every day Magpie retains. `window.__codexDailyTokenUsage.getSnapshot(dateKey)` is only a fallback for dates outside that window.
 - Add a usage data source only through the `codexPlusUsageDataSources()` descriptor table: URL templates plus a series/today/task parser each. Refresh probes sources in order, the first one returning snapshots wins, and multiple sources are never merged, so a second aggregator can be added without touching render or refresh logic.
 - Do not read full rollout files directly through internal `workspaceFiles.read`.
+- Thread history rows must carry the **per-call** token amounts, not the thread's cumulative
+  totals. `token_usage_record.usage` is per call; `thread_token_usage` is cumulative and
+  belongs in `contextUsed` only. Feeding cumulative totals as per-call amounts makes TOP 3
+  show thread-wide sums as if they were single calls.
+- The context window lives in `token_count.info.model_context_window`, and it can appear after
+  the matching usage record, so read it in a separate pass.
 - Usage deltas come from the `last` bucket of `thread/tokenUsage/updated` (`tokenUsage.last` against cumulative `total`); history dedupe keys on the cumulative `contextUsed`.
 - Throughput uses token-weighted settled per-call decode windows. The whole-turn window is only a fallback when no settled call timeline exists.
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.

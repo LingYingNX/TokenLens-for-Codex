@@ -114,12 +114,28 @@ node .\standalone\tools\check.mjs
 |---|---|
 | `tokenlens-host.mjs` | Node 宿主：等待/附着 Codex、CDP 注入、读 rollout 算线程历史 |
 | `tokenlens-host-adapter.js` | renderer 适配层：补 `codexPlus` / `__codexSessionDeleteBridge` |
+| `rollout-history.mjs` | 从 rollout 还原线程用量历史（单次调用量口径） |
 | `setup-env.ps1` | 设置/撤销环境变量 |
 | `install.ps1` | 安装/卸载器 |
 | `start-tokenlens.cmd` | 手动启动宿主用 |
 | `tools/check.mjs` | 端到端验证 |
 | `tools/cdp.mjs` | 最小 CDP 客户端（只用 Node 内置 WebSocket/fetch） |
 | `tools/enter-thread.mjs` | 辅助：跳到线程页（状态栏只在有 threadId 时渲染） |
+
+## 用量历史的口径
+
+线程用量历史来自 rollout 文件的 `token_usage_record` 事件，**必须用单次调用量**：
+
+| rollout 字段 | 含义 | 用在哪 |
+|---|---|---|
+| `usage` | 单次调用量 | TOP3、柱状图、每轮统计 |
+| `turn_id` | 轮次归属 | 分轮聚合 |
+| `thread_token_usage` | 线程累计量 | `contextUsed`（上下文占用） |
+| `token_count.info.model_context_window` | 上下文窗口 | `contextLimit` |
+
+**不能用 `token_count.info.total_token_usage`** —— 那是整个线程的累计量
+（该线程已到 9167 万）。喂给 tokenlens.js 会让 TOP3 显示「9167.95万」这种
+不可能的单次调用，柱状图刻度顶到 10240 万。这个坑踩过一次，`tests/rollout-history.test.js` 钉住了它。
 
 ## 已知限制
 

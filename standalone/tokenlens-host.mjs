@@ -1,18 +1,17 @@
-// TokenLens 官方 Codex 宿主：启动/连接 Codex 的调试端口，注入 TokenLens 并常驻。
+// TokenLens 官方 Codex 宿主：等 Codex 的调试端口就绪，附着并注入 TokenLens。
 //
-// 与旧版的关键差别（这些差别就是之前「插件没生效 + Codex 闪退」的根因）：
-//   1. 启动目标是 ChatGPT.exe，不是 Codex.exe。Codex.exe 只是 20KB 的更新器 trampoline，
-//      不接受命令行参数，调试端口永远起不来。
-//   2. 绝不在失败时强杀 Codex。端口没就绪就报错退出，绝不循环重启。
-//   3. 已经在运行的 Codex 不打断，只做附着。
+// 铁律（每一条都对应过一次真实故障）：
+//   1. 绝不杀 Codex。旧版是「端口没就绪 → 杀 Codex → 再启动」的无限循环，
+//      那就是「启动几秒后 Codex 闪退」的真正原因。
+//   2. 绝不自己启动 Codex。用户正常点图标启动，端口由 setup-env.ps1 的环境变量打开。
+//   3. 注入必须幂等。tokenlens.js 没有自带守卫，重复 evaluate 会渲染双份状态栏。
 import { createHash, randomBytes } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { readFile, readdir, stat } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readThreadUsageHistory } from "./rollout-history.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.dirname(here);
@@ -21,7 +20,6 @@ const adapterPath = path.join(here, "tokenlens-host-adapter.js");
 const logPath = path.join(here, "tokenlens-host.log");
 
 const port = Number(process.env.TOKENLENS_CDP_PORT || 9229);
-const sessionsRoot = path.join(os.homedir(), ".codex", "sessions");
 const powershell = "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
 function log(message) {
@@ -218,86 +216,6 @@ class Cdp {
 }
 
 // ---------------------------------------------------------------- 宿主路由
-
-async function collectRolloutFiles(threadId) {
-  const found = [];
-  const walk = async (dir, depth) => {
-    if (depth > 4) return;
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-        continue;
-      }
-      if (!entry.name.endsWith(".jsonl")) continue;
-      if (!entry.name.includes(threadId)) continue;
-      try {
-        const info = await stat(full);
-        found.push({ path: full, mtime: info.mtimeMs });
-      } catch {
-        // 读不到就跳过。
-      }
-    }
-  };
-  await walk(sessionsRoot, 0);
-  found.sort((a, b) => a.mtime - b.mtime);
-  return found;
-}
-
-// 从 rollout 的 token_count 事件里还原线程用量历史。
-// tokenlens.js 期望的行格式：{ observed_at, turn_id, usage: { input_tokens, cached_input_tokens, output_tokens, total_tokens, contextUsed, contextLimit } }
-async function readThreadUsageHistory(threadId) {
-  if (!threadId) return [];
-  const files = await collectRolloutFiles(threadId);
-  const rows = [];
-  const seen = new Set();
-  for (const file of files) {
-    const text = await readFile(file.path, "utf8");
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.includes("token_count")) continue;
-      let entry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const payload = entry?.payload;
-      if (!payload || payload.type !== "token_count") continue;
-      const info = payload.info;
-      const total = info?.total_token_usage;
-      const last = info?.last_token_usage;
-      if (!total) continue;
-      const observedAt = Date.parse(entry.timestamp || "");
-      if (!Number.isFinite(observedAt)) continue;
-      const turnId = String(payload.turn_id || payload.turnId || "");
-      // 累计值完全一致的重放通知只算一次。
-      const key = [turnId, total.total_tokens, total.input_tokens, total.output_tokens].join("|");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push({
-        observed_at: new Date(observedAt).toISOString(),
-        turn_id: turnId,
-        usage: {
-          input_tokens: Number(total.input_tokens || 0),
-          cached_input_tokens: Number(total.cached_input_tokens || 0),
-          cache_write_input_tokens: Number(total.cache_write_input_tokens || 0),
-          output_tokens: Number(total.output_tokens || 0),
-          total_tokens: Number(total.total_tokens || 0),
-          contextUsed: Number(last?.total_tokens ?? total.total_tokens ?? 0),
-          contextLimit: Number(info.model_context_window || 0),
-        },
-      });
-    }
-  }
-  rows.sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
-  return rows;
-}
 
 // ---------------------------------------------------------------- 注入
 
