@@ -87,6 +87,9 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
 - `data-codex-plus-ext` marks this script's own DOM (the status-line root) so `codexPlusUsageObserve` skips its own mutations; keep it on any inserted root that mutates often.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
+- The status line renders only on thread pages. The home page has no current thread, so the
+  script hides it on purpose (2026-11-23, user decision). Do not "fix" this by showing the
+  last active thread's usage on the home page.
 - `codexPlusUsageInstallStyle()` must not assume `document.head` exists. A script injected with
   `Page.addScriptToEvaluateOnNewDocument` runs while `document.readyState === "loading"` and
   `document.head` is `undefined`; `document.head?.appendChild(style)` then fails silently and
@@ -152,3 +155,7 @@ No scoped `AGENTS.md` files exist. Add one when a directory gains its own rules.
 - The call chart renders at most the latest 200 calls; TOP 3 still ranks the complete merged sample set.
 - In-memory state keeps at most 32 threads and 512 live call samples.
 - Provider batches shorter than `1000 ms` or `30` output tokens are ignored for speed; the status line may briefly show `--` rather than a synthetic peak.
+- The official Codex app opens its local debug port only in the `dev` build flavor, and that
+  flavor is excluded from the in-app updater (the app's own updater list is
+  `[Nightly, InternalAlpha, PublicBeta, Prod]`). Microsoft Store updates still work, because the
+  app is an MSIX package. Accepted trade-off (2026-11-23).

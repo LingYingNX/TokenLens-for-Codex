@@ -168,3 +168,7 @@ node .\standalone\tools\check.mjs
 - 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示，这是插件原有行为。
 - 注入需要本地调试端口，只监听 127.0.0.1。介意的话别用这个方案。
 - dev flavor 下 Codex 应用内不弹更新提示，得从微软商店更新。
+  原因是官方把 Dev 排除在更新器白名单外（app.asar 里是
+  `[Nightly, InternalAlpha, PublicBeta, Prod]`），不是本方案关掉的。
+- 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示 —— 这是插件原有行为，
+  2026-11-23 已确认保留。
