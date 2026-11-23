@@ -1,10 +1,11 @@
 @echo off
 setlocal
 set "HERE=%~dp0"
-where pwsh >nul 2>nul
-if %errorlevel%==0 (
-  start "" /min pwsh -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%HERE%tokenlens-host.ps1" -Restart
-) else (
-  start "" /min powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%HERE%tokenlens-host.ps1" -Restart
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js not found. Install Node.js first.
+  pause
+  exit /b 1
 )
+start "TokenLens Host" /min node "%HERE%tokenlens-host.mjs"
 endlocal

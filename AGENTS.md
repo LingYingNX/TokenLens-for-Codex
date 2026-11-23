@@ -12,8 +12,12 @@ TokenLens for Codex is a single-file JavaScript user script for the Codex++ rend
 
 - Runtime: Codex++ user-script environment (the `app://-/` renderer page).
 - Language: browser JavaScript in one IIFE; no framework and no module build.
-- Verification: Node.js 24 with the built-in `node:test` runner.
+- Verification: Node.js (host `v26.13.1`) with the built-in `node:test` runner.
 - Distribution: this standalone repository plus a separate script-market submission branch.
+- Host: the Codex++ user-script host was deleted on 2026-10-22, so `standalone/` injects the
+  same `tokenlens.js` into the official Codex desktop app over CDP. The script itself stays
+  host-agnostic; `standalone/tokenlens-host-adapter.js` supplies only the two routes the
+  official app lacks (`codexPlus.call` and `__codexSessionDeleteBridge`).
 
 ## Commands
 
@@ -23,6 +27,8 @@ TokenLens for Codex is a single-file JavaScript user script for the Codex++ rend
 | Test | `node --test tests/*.test.js` |
 | Single test | `node --test tests/analytics.test.js` |
 | Install (manual) | Copy `tokenlens.js` into `%APPDATA%\Codex++\user_scripts\`, then reload the extension |
+| Install (official Codex) | `powershell -ExecutionPolicy Bypass -File .\standalone\install.ps1` |
+| Live check (official Codex) | `node .\standalone\tools\check.mjs` — needs a running Codex with the debug port |
 
 There is no `package.json`, build, lint, format or dependency-install step. Do not invent one.
 
@@ -35,6 +41,9 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `artifacts/codex-plus-throughput-preview.png` | UI preview used by the market entry |
 | `tests/helpers.js` | Loads `tokenlens.js` and extracts named functions for focused tests |
 | `tests/*.test.js` | Contract and calculation tests for history, live calls, ranking, chart scale, context, global usage, theme and artifact sync |
+| `standalone/tokenlens-host.mjs` | Node host for the official Codex app: launch/attach, CDP injection, rollout history |
+| `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official Codex app lacks |
+| `standalone/tools/check.mjs` | Live end-to-end check against a running Codex |
 | `README.md` | Install steps and feature list |
 | `preview.png` | Screenshot referenced by the README |
 | `LICENSE` | MIT license |
@@ -63,11 +72,22 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - Live ranges use TokenLens's own Codex-only Magpie requests below; never reuse another plugin's cached Magpie usage. The series request asks for Magpie's 30-day window so custom ranges can reach every day Magpie retains. `window.__codexDailyTokenUsage.getSnapshot(dateKey)` is only a fallback for dates outside that window.
 - Add a usage data source only through the `codexPlusUsageDataSources()` descriptor table: URL templates plus a series/today/task parser each. Refresh probes sources in order, the first one returning snapshots wins, and multiple sources are never merged, so a second aggregator can be added without touching render or refresh logic.
 - Do not read full rollout files directly through internal `workspaceFiles.read`.
-- Usage deltas come from `last_token_usage`; history dedupe keys on the cumulative `contextUsed`.
+- Usage deltas come from the `last` bucket of `thread/tokenUsage/updated` (`tokenUsage.last` against cumulative `total`); history dedupe keys on the cumulative `contextUsed`.
 - Throughput uses token-weighted settled per-call decode windows. The whole-turn window is only a fallback when no settled call timeline exists.
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
-- Every node this script inserts must carry `data-codex-plus-ext`.
+- `data-codex-plus-ext` marks this script's own DOM (the status-line root) so `codexPlusUsageObserve` skips its own mutations; keep it on any inserted root that mutates often.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
+- The standalone host must never terminate the Codex process. A failed launch ends the host;
+  it must not retry, and it must not `Stop-Process` Codex.
+- Launch the official Codex app through `app/ChatGPT.exe`, never `app/Codex.exe` (the latter is a
+  20KB update trampoline that ignores command-line flags, so the debug port never opens).
+- Injection must be idempotent: `tokenlens.js` has no internal guard, so the host checks
+  `window.__codexPlusThroughputStatusLineRuntime` before evaluating the script again.
+- `Runtime.addBinding` and `Page.addScriptToEvaluateOnNewDocument` are per CDP session; re-register
+  them on every reattach, otherwise the renderer loses the host bridge.
+- Do not overwrite `window.electronBridge`. The official bridge rejects raw fetches
+  ("HTTP requests must use the HTTP fetch service."); `tokenlens.js` already resolves
+  `appServices.httpFetch` on its own.
 
 ## Tests
 
@@ -81,6 +101,9 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - Run `tests/artifact-sync.test.js` after any `tokenlens.js` edit.
 - Market release checks must assert the full UserScript metadata header (`@version`, `@match`, `@run-at`), optional data-source disclosure and manifest SHA-256.
 - There is no DOM-level automation. UI changes need manual verification in a running Codex++.
+- Host changes must keep `tests/standalone-host.test.js` green: it pins the no-kill rule, the
+  `ChatGPT.exe` launch target, idempotent injection and per-session binding registration.
+- Run `node standalone/tools/check.mjs` against a live Codex after changing the adapter or the host.
 
 ## Scoped AGENTS.md
 
