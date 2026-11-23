@@ -240,7 +240,7 @@ async function waitForPage(timeoutMs) {
 }
 
 // 只探测 Codex 安装位置用于日志。宿主不再自己启动 Codex——正常启动由用户点图标，
-// 调试端口由桌面快捷方式里的启动参数打开（见 setup-launcher.ps1）。
+// 调试端口由桌面快捷方式里的启动参数打开（见 setup-env.ps1）。
 async function getPackage() {
   const installLocation = await new Promise((resolve, reject) => {
     execFile(
@@ -340,7 +340,7 @@ async function main() {
   // 重启它之后端口就会出现。宿主一直等，只有用户主动卸载才停。
   let page = await waitForPage(2000);
   if (!page) {
-    log("等待 Codex 启动（双击桌面 ChatGPT 图标即可，调试端口由启动参数打开）…");
+    log("等待 Codex 启动（开始菜单 / 桌面图标 / 任务栏都行，调试端口由环境变量自动打开）…");
     let hinted = false;
     const deadline = Date.now() + 3600000;
     while (Date.now() < deadline && !page) {
@@ -348,7 +348,7 @@ async function main() {
       page = await waitForPage(1000);
       if (!page && !hinted && (await codexRunning())) {
         hinted = true;
-        log("检测到 Codex 在运行但没有调试端口：请用桌面 ChatGPT 图标启动（它带调试端口参数），或完全退出 Codex 后重开。宿主继续等待。");
+        log("检测到 Codex 在运行但没有调试端口：请先运行 setup-env.ps1，再完全退出并重启 Codex。宿主继续等待。");
       }
     }
     if (!page) {

@@ -43,7 +43,7 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `tests/*.test.js` | Contract and calculation tests for history, live calls, ranking, chart scale, context, global usage, theme and artifact sync |
 | `standalone/tokenlens-host.mjs` | Node host for the official Codex app: waits for the debug port, attaches, injects over CDP, reads rollout history |
 | `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official Codex app lacks |
-| `standalone/setup-launcher.ps1` | Points the desktop shortcut at the MSIX execution alias with the debug-port switches |
+| `standalone/setup-env.ps1` | Sets/clears the env vars (`BUILD_FLAVOR=dev` + debug-port switches) that open the port on any launch |
 | `standalone/rollout-history.mjs` | Rebuilds thread usage history from rollout files (per-call token amounts) |
 | `standalone/tools/check.mjs` | Live end-to-end check against a running Codex |
 | `README.md` | Install steps and feature list |
@@ -100,15 +100,18 @@ The market branch is only a submission copy. Do not treat it as the source branc
   to parse. `install.ps1` must also prefer `pwsh` over `powershell.exe`.
 - The host never launches Codex and never terminates it. The user starts Codex normally; the host
   only attaches once the debug port is up.
-- The debug port comes from the MSIX execution alias `chatgpt-desktop.exe` with command-line
-  switches, configured by `setup-launcher.ps1` on the desktop shortcut. Keep the app in its
-  `prod` flavor: `BUILD_FLAVOR=dev` would enable the port through
-  `CODEX_ELECTRON_CHROMIUM_SWITCHES`, but the official updater whitelist is
-  `[Nightly, InternalAlpha, PublicBeta, Prod]`, so Dev turns the in-app updater off
-  (`enableUpdater=false`). The execution alias keeps `enableUpdater=true`.
-- AUMID activation (`shell:AppsFolder\...!App`, Start menu, taskbar) ignores command-line
-  arguments. Only the execution alias and the desktop shortcut that points at it can carry
-  the debug port.
+- The debug port comes from `BUILD_FLAVOR=dev` plus `CODEX_ELECTRON_CHROMIUM_SWITCHES`,
+  set by `standalone/setup-env.ps1`. The app reads that variable only in the Dev flavor
+  (`if (buildFlavor !== Dev || !a) return []`) and every switch value must be a string.
+  This is the only route that opens the port for **every** launch entry point.
+- Accepted cost (2026-11-23, user decision): Dev is absent from the official updater
+  whitelist `[Nightly, InternalAlpha, PublicBeta, Prod]`, so `enableUpdater=false` and the
+  in-app updater stops. Microsoft Store updates are unaffected (MSIX package updated by the
+  Store and Windows). State this cost plainly; never hide it.
+- Do not go back to command-line switches on the execution alias `chatgpt-desktop.exe`:
+  AUMID activation (`shell:AppsFolder\...!App`, Start menu, taskbar) drops command-line
+  arguments, so only argument-carrying entries would get the port, and mixing both entry
+  points spawns a second instance (measured: 10 → 20 processes, 2 windows).
 - `NODE_OPTIONS=--require` cannot patch the Electron main process here: the
   `EnableNodeOptionsEnvironmentVariable` fuse is disabled, so the file is never loaded.
 - Injection must be idempotent: `tokenlens.js` has no internal guard, so the host checks
@@ -161,6 +164,6 @@ No scoped `AGENTS.md` files exist. Add one when a directory gains its own rules.
 - The call chart renders at most the latest 200 calls; TOP 3 still ranks the complete merged sample set.
 - In-memory state keeps at most 32 threads and 512 live call samples.
 - Provider batches shorter than `1000 ms` or `30` output tokens are ignored for speed; the status line may briefly show `--` rather than a synthetic peak.
-- The desktop shortcut is the only launch path that carries the debug port. The Start menu and
-  taskbar entries activate the app by AUMID, which ignores command-line arguments, so Codex
-  started that way runs without TokenLens.
+- Environment variables are read when the Codex process starts, so a Codex that was already
+  running before `setup-env.ps1` ran keeps running without the debug port until it is fully
+  exited and started again.

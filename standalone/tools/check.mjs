@@ -44,13 +44,14 @@ const dom = await cdp.evaluate(`(() => ({
 check("状态栏没有重复实例", dom?.statusLines <= 1, JSON.stringify(dom));
 
 // 3. 官方事件流能驱动状态栏
-// 用气泡层里的「输出」token 数做断言：它会随事件累加，容易检测。
-// 状态栏上的百分比是缓存命中率，单调累加不会回落，不能用来做「变化」断言。
+//
+// 断言气泡层里的上下文占用百分比：合成事件把 modelContextWindow 压到一半，
+// 占用率必然从真实值跳到 100%。这个信号稳定，不依赖具体线程的累计量。
 // 合成事件必须用唯一累计值，否则 tokenlens.js 的 appliedTotals 会整条丢弃。
-// 它生效后会真的累加进本轮用量，所以第 6 步必须刷新页面重置内存状态。
+// 生效后会污染本轮用量，所以第 6 步会刷新页面重置内存状态并断言还原。
 const eventProbe = await cdp.evaluate(`(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const readOutput = async () => {
+  const readContextPercent = async () => {
     const btn = document.querySelector("#codex-plus-throughput-statusline button");
     if (btn) {
       btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
@@ -59,13 +60,11 @@ const eventProbe = await cdp.evaluate(`(async () => {
     }
     const pop = document.getElementById("codex-plus-throughput-popover");
     const text = pop?.textContent.replace(/\\s+/g, " ").trim() || "";
-    const match = text.match(/输出([\\d.]+)([KMB]?)/);
-    return { text: text.slice(0, 90), output: match ? Number(match[1]) : null };
+    const match = text.match(/([\\d.]+)%\\//);
+    return match ? match[1] : null;
   };
-  const before = await readOutput();
+  const before = await readContextPercent();
   const threadId = document.querySelector("[data-above-composer-conversation-id]")?.getAttribute("data-above-composer-conversation-id");
-
-  // 唯一累计值 + 一大笔输出：输出 token 会明显增长。
   const probe = Date.now() * 1000 + 4242;
   window.postMessage({
     type: "mcp-notification",
@@ -74,21 +73,19 @@ const eventProbe = await cdp.evaluate(`(async () => {
     params: {
       threadId,
       tokenUsage: {
-        total: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 9876543, totalTokens: 9876543 },
-        last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 9876543, totalTokens: 9876543 },
-        modelContextWindow: 486400,
+        total: { inputTokens: probe, cachedInputTokens: probe, outputTokens: 0, totalTokens: probe },
+        last: { inputTokens: probe, cachedInputTokens: probe, outputTokens: 0, totalTokens: probe },
+        modelContextWindow: 1,
       },
     },
   }, "*");
   await sleep(2500);
-  const after = await readOutput();
+  const after = await readContextPercent();
   return { before, after };
 })()`);
 check(
   "官方事件流驱动状态栏",
-  typeof eventProbe?.before?.output === "number"
-    && typeof eventProbe?.after?.output === "number"
-    && eventProbe.after.output > eventProbe.before.output,
+  eventProbe?.before !== eventProbe?.after && eventProbe?.after !== null,
   JSON.stringify(eventProbe),
 );
 

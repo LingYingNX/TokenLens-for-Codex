@@ -35,12 +35,22 @@ test("宿主不自己启动 Codex，只附着等待", () => {
   assert.match(host, /等待 Codex 启动/, "宿主必须等待 Codex 出现");
 });
 
-test("调试端口参数由启动配置提供", () => {
-  // 端口不在宿主命令行里（那会改变启动方式），而是写进桌面快捷方式的参数。
-  const setup = readFileSync(path.join(repo, "standalone", "setup-launcher.ps1"), "utf8");
-  assert.match(setup, /--remote-debugging-address=127\.0\.0\.1/);
-  assert.match(setup, /--remote-debugging-port=9229/);
-  assert.match(setup, /--remote-allow-origins=\*/);
+test("调试端口由环境变量的 JSON 开关提供", () => {
+  // 端口不在宿主命令行里（那会改变启动方式），而是写进官方开关环境变量。
+  // 值必须是字符串：官方对数字会抛 "value for <name> must be a string or null"。
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  assert.match(setup, /"remote-debugging-address"\s*=\s*"127\.0\.0\.1"/);
+  assert.match(setup, /"remote-debugging-port"\s*=\s*"9229"/);
+  assert.match(setup, /"remote-allow-origins"\s*=\s*"\*"/);
+  assert.match(setup, /ConvertTo-Json -Compress/, "必须序列化成 JSON");
+});
+
+test("安装器还原桌面快捷方式，不再依赖启动参数", () => {
+  const install = readFileSync(path.join(repo, "standalone", "install.ps1"), "utf8");
+  // B 方案靠环境变量开端口，任何入口都有效，桌面图标必须保持官方原样。
+  assert.match(install, /ChatGPT\.lnk\.bak-tokenlens/, "必须认得历史备份");
+  assert.match(install, /Copy-Item -LiteralPath \$shortcutBackup -Destination \$shortcutPath/, "必须能把快捷方式还原");
+  assert.doesNotMatch(install, /setup-launcher/, "不得再引用已删除的启动器脚本");
 });
 
 test("宿主不会因为 Codex 未启动而退出", () => {
@@ -121,23 +131,31 @@ test("重新附着后必须重新注册宿主桥", () => {
   assert.match(host, /register\(cdp, session\)/, "注册必须传入会话对象");
 });
 
-test("启动配置用 MSIX 执行别名开调试端口，不改 flavor", () => {
-  const setup = readFileSync(path.join(repo, "standalone", "setup-launcher.ps1"), "utf8");
-  // 走 BUILD_FLAVOR=dev + CODEX_ELECTRON_CHROMIUM_SWITCHES 会让官方应用内更新器停摆
-  //（Dev 不在更新器白名单 [Nightly, InternalAlpha, PublicBeta, Prod] 里）。
-  // 所以改用 MSIX 的执行别名 chatgpt-desktop.exe + 命令行开关：仍是 prod flavor。
-  // 只允许在 Uninstall 分支里把旧变量清空，不得把 BUILD_FLAVOR 设成 dev。
-  assert.doesNotMatch(setup, /SetEnvironmentVariable\("BUILD_FLAVOR",\s*"dev"/, "不得把 build flavor 设成 dev，否则应用内更新器停摆");
-  assert.doesNotMatch(setup, /SetEnvironmentVariable\("CODEX_ELECTRON_CHROMIUM_SWITCHES",\s*\$switches/, "不得用环境变量方式开端口");
-  assert.match(setup, /chatgpt-desktop\.exe/, "必须用 MSIX 执行别名，它能带参数");
-  assert.match(setup, /--remote-debugging-port=9229/, "必须开调试端口");
-  assert.match(setup, /127\.0\.0\.1/, "调试端口只能监听回环地址");
-  assert.match(setup, /-Uninstall/, "必须能撤销启动配置");
+test("环境变量脚本用 dev flavor 开端口，任意入口都生效", () => {
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  // 官方 app.asar 原文：if (buildFlavor !== Dev || !a) return [];
+  // 即只有 BUILD_FLAVOR=dev 时才读 CODEX_ELECTRON_CHROMIUM_SWITCHES。
+  // 这也是「任何入口启动都有调试端口」的唯一途径 —— AUMID 激活会丢掉命令行参数。
+  assert.match(setup, /SetEnvironmentVariable\(\$flavorName, "dev", "User"\)/, "必须把 BUILD_FLAVOR 设成 dev");
+  assert.match(setup, /SetEnvironmentVariable\(\$switchName, \$switches, "User"\)/, "必须写 CODEX_ELECTRON_CHROMIUM_SWITCHES");
+  assert.match(setup, /remote-debugging-address/, "必须设调试地址");
+  assert.match(setup, /remote-debugging-port/, "必须设调试端口");
+  assert.match(setup, /remote-allow-origins/, "必须放开 CDP origins");
+  assert.match(setup, /-Uninstall/, "必须能撤销环境变量");
+});
+
+test("环境变量脚本明确记录应用内更新停摆的代价", () => {
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  // 用户 2026-11-23 选择 B：接受应用内更新停摆，换取任意入口都能注入。
+  // 注释里必须留证据，免得后人以为这是本方案「关掉」的。
+  assert.match(setup, /应用内更新器停摆/, "必须写明代价");
+  assert.match(setup, /Nightly, InternalAlpha, PublicBeta, Prod/, "必须写出官方更新器白名单");
+  assert.match(setup, /微软商店的更新不受影响/, "必须说明商店更新照常");
 });
 
 test("PowerShell 脚本必须是 UTF-8 BOM", () => {
   // PS 5.1 按 ANSI 读无 BOM 的 UTF-8，中文乱码会把引号配对搞错，脚本直接语法报错。
-  for (const name of ["install.ps1", "setup-launcher.ps1"]) {
+  for (const name of ["install.ps1", "setup-env.ps1"]) {
     const bytes = readFileSync(path.join(repo, "standalone", name));
     assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], name + " 必须带 UTF-8 BOM");
   }

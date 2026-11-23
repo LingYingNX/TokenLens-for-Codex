@@ -27,14 +27,15 @@ app.asar 里搜不到 `user_scripts` / `userscript`，插件系统只有 `.codex
 
 CDP 注入必须先有调试端口。官方 Codex 没有任何前端扩展点，只能靠 CDP。
 
-有两条路，**本方案用第二条**：
+端口有两条路，**本方案用第一条（环境变量）**，2026-11-23 用户拍板：
 
-| 方案 | 做法 | 代价 |
-|---|---|---|
-| A. 环境变量 | `BUILD_FLAVOR=dev` + `CODEX_ELECTRON_CHROMIUM_SWITCHES` | **Dev flavor 被官方排除在应用内更新器之外**，更新器不再运行 |
-| **B. 执行别名（采用）** | 桌面图标指向 MSIX 的 `chatgpt-desktop.exe`，参数里带调试端口开关 | 无。仍是 prod flavor，`enableUpdater=true` |
+| 方案 | 做法 | 任意入口都有端口 | 应用内更新 |
+|---|---|---|---|
+| **A. 环境变量（采用）** | `BUILD_FLAVOR=dev` + `CODEX_ELECTRON_CHROMIUM_SWITCHES` | ✅ 是 | ❌ 停摆 |
+| B. 执行别名 | 桌面图标指向 `chatgpt-desktop.exe`，参数带端口开关 | ❌ 只有带参数的入口 | ✅ 正常 |
 
-方案 A 的问题在官方 app.asar 里写得很直白：
+选 A 是因为它满足唯一不能让步的要求：**用任何方式启动 Codex 都能注入**。
+代价是应用内更新器停摆 —— 这不是本方案关掉的，是 Dev flavor 的设计结果：
 
 ```js
 f = [Nightly, InternalAlpha, PublicBeta, Prod]   // 更新器白名单，没有 Dev
@@ -42,31 +43,35 @@ m = { Nightly:{kind:"msix"}, InternalAlpha:{kind:"msix"}, PublicBeta:{kind:"stor
 g = (e,t,r,n) => "false"!==n.CODEX_SPARKLE_ENABLED && f.includes(e) && t===r
 ```
 
-实测启动日志能直接看到差异：
+启动日志能直接看到差异：
 
 ```
-buildFlavor=dev  enableSparkle=false enableUpdater=false   ← 更新器停摆
+buildFlavor=dev  enableSparkle=false enableUpdater=false   ← 更新器停摆（本方案）
 buildFlavor=prod enableSparkle=false enableUpdater=true    ← 正常
 ```
 
-方案 B 的关键是 MSIX manifest 里的执行别名：
+微软商店的更新不受影响：应用是 MSIX 包，由商店与 Windows 负责，与 flavor 无关。
 
-```xml
-<desktop:ExecutionAlias Alias="chatgpt-desktop.exe" />
-```
+方案 B 走不通的原因不是它不好，而是它只能覆盖带参数的启动入口：
+MSIX manifest 里的 `<desktop:ExecutionAlias Alias="chatgpt-desktop.exe" />`
+（`%LOCALAPPDATA%\Microsoft\WindowsApps\chatgpt-desktop.exe`）是真实可执行入口，
+带参数有效；但 AUMID 激活（`shell:AppsFolder\...!App`、开始菜单、任务栏）会丢掉参数。
+实测混用两种入口还会开出第二个实例（10 进程 → 20 进程、2 个窗口），单实例锁不生效。
 
-它是 `%LOCALAPPDATA%\Microsoft\WindowsApps\chatgpt-desktop.exe` 处的真实可执行入口，
-**带参数有效**；而 AUMID 激活（`shell:AppsFolder\...!App`、开始菜单、任务栏）会忽略参数。
-所以桌面快捷方式指向这个别名，图标和点击体验都不变。
+环境变量只覆盖**新启动的进程**：改了之后要完全退出 Codex 再启动才生效。
 
 ### 试过但走不通的路
 
 | 方案 | 结果 |
 |---|---|
-| 命令行 `--remote-debugging-port` 直接跑 `ChatGPT.exe` | 要改启动方式，等于换了个启动器 |
+| 命令行 `--remote-debugging-port` 直接跑 `ChatGPT.exe` | 要改启动方式，等于换了个启动器；且 AUMID 入口根本传不进参数 |
 | `NODE_OPTIONS=--require` 注入 Electron main 进程 | **Electron fuse 已禁用**（`EnableNodeOptionsEnvironmentVariable = 0`），不执行 |
-| `CODEX_ELECTRON_CHROMIUM_SWITCHES` 单独设 | 官方只在 Dev flavor 读，无效 |
+| `CODEX_ELECTRON_CHROMIUM_SWITCHES` 不带 `BUILD_FLAVOR=dev` | 官方只在 Dev flavor 读，无效 |
 | 改 `app.asar` | `WindowsApps` 目录 TrustedInstaller 拥有，不可写；且完整性校验开启 |
+| 改 `AppxManifest.xml` | 包已签名 |
+| 进程启动触发（4688 审计 + 计划任务） | 要另开审计策略，且必须在 Codex 起来后杀掉重开，等于重演闪退事故 |
+| 应用内浏览器 CDP / app-server websocket | 拿不到 renderer DOM，注不进去 |
+
 ## 踩过的坑（别再踩）
 
 1. **启动目标必须是 `ChatGPT.exe`**。`Codex.exe` 只有 20KB，是 windows-update trampoline，
@@ -149,7 +154,7 @@ node .\standalone\tools\check.mjs
 | `tokenlens-host.mjs` | Node 宿主：等待/附着 Codex、CDP 注入、读 rollout 算线程历史 |
 | `tokenlens-host-adapter.js` | renderer 适配层：补 `codexPlus` / `__codexSessionDeleteBridge` |
 | `rollout-history.mjs` | 从 rollout 还原线程用量历史（单次调用量口径） |
-| `setup-launcher.ps1` | 配置/撤销桌面快捷方式（执行别名 + 调试端口参数） |
+| `setup-env.ps1` | 配置/撤销环境变量（dev flavor + 调试端口开关） |
 | `install.ps1` | 安装/卸载器 |
 | `start-tokenlens.cmd` | 手动启动宿主用 |
 | `tools/check.mjs` | 端到端验证 |
