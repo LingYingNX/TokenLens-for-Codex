@@ -9,7 +9,6 @@ $setupEnv = Join-Path $root "setup-env.ps1"
 $taskName = "TokenLens Host"
 $shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "TokenLens Codex.lnk"
 
-# 选一个现代 PowerShell 来跑子脚本。
 # PS 5.1（powershell.exe）按 ANSI 读无 BOM 的 UTF-8，中文会乱码并把引号配对搞错，
 # 所以优先用 pwsh（PS 7）。BOM 已经让 PS 5.1 也能正确读，但调用端同样该用现代 shell。
 function Get-PreferredShell {
@@ -34,19 +33,28 @@ if (-not (Test-Path -LiteralPath $setupEnv)) { throw "missing setup-env.ps1" }
 # 1. 环境变量：让 Codex 正常启动时自动打开本地 CDP 端口。
 & $shell -NoProfile -ExecutionPolicy Bypass -File $setupEnv | Out-Host
 
-# 2. 后台宿主：登录后常驻，等 Codex 起来就附着注入。
+# 2. 后台宿主：常驻等待 Codex。
+#    只用 AtLogOnce 的话有两个问题：宿主崩一次就再也不起来；不重新登录就不会跑。
+#    所以加两个触发器：登录时跑一次（延迟 30 秒），之后每分钟拉一次。
+#    宿主本身常驻，重复触发是幂等的；MultipleInstances=IgnoreNew 保证不会起多个。
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) { throw "node.exe not found (Node.js missing or not in PATH)" }
 
 $action = New-ScheduledTaskAction -Execute $node -Argument ('"{0}"' -f $hostScript)
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$trigger.Delay = "PT30S"
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+
+$logon = New-ScheduledTaskTrigger -AtLogOn
+$logon.Delay = "PT30S"
+
+# 每分钟重复一次，不设时长 = 无限重复。
+$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logon, $repeat) -Settings $settings -Force | Out-Null
 
 Write-Host "Installed:"
 Write-Host ("  Env vars -> Codex opens the debug port on normal launch")
-Write-Host ("  Scheduled task: " + $taskName)
+Write-Host ("  Scheduled task: " + $taskName + " (logon + every minute)")
 Write-Host ""
 Write-Host "Usage: start Codex normally (Start menu / desktop icon). TokenLens injects itself in the background."
 Write-Host "Restart Codex if it is already running, so it picks up the new environment variables."

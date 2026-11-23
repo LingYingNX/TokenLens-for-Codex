@@ -66,7 +66,12 @@ if (buildFlavor !== Dev || !a) return [];   // 只有 Dev flavor 才读这个变
    宿主在 `activate()` 前先检查 `window.__codexPlusThroughputStatusLineRuntime`。
 4. **不要覆盖 `window.electronBridge`**。官方 bridge 明确拒绝裸 fetch：
    「HTTP requests must use the HTTP fetch service.」覆盖它只会破坏宿主自己的通道。
-5. **PowerShell 脚本要写 UTF-8 with BOM**。PS 5.1 按 ANSI 读无 BOM 的 UTF-8，
+5. **注入时机早到没有 `document.head`**。`Page.addScriptToEvaluateOnNewDocument` 的脚本
+   在 `document.readyState === "loading"`、`document.head` 还是 `undefined` 时执行。
+   `document.head?.appendChild(style)` 会静默失败，样式永久丢失，状态栏就变成竖着堆叠的裸文本。
+   tokenlens.js 现在等 `DOMContentLoaded` 再装样式；宿主也会检查样式标签，
+   发现「运行时在、样式不在」的半注入状态时只补样式、不重跑整个脚本。
+6. **PowerShell 脚本要写 UTF-8 with BOM**。PS 5.1 按 ANSI 读无 BOM 的 UTF-8，
    中文乱码会把引号配对搞错，脚本直接语法报错。
 
 ## 安装
@@ -157,6 +162,7 @@ node .\standalone\tools\check.mjs
 ## 已知限制
 
 - 宿主读磁盘 rollout 文件算线程用量历史，等于 Codex++ 旧宿主的 `/thread-usage-history` 行为；
+- 计划任务每分钟拉一次宿主，宿主本身常驻等待 Codex（`MultipleInstances=IgnoreNew` 保证不重复）。
   压缩切换后分段历史仍可能不全。
 - Magpie 用量完全依赖 `http://127.0.0.1:3425` 在跑；没起来时状态栏的用量区显示空。
 - 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示，这是插件原有行为。

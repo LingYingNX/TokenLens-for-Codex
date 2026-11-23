@@ -304,9 +304,28 @@ async function activate(cdp) {
   const plugin = await readFile(pluginPath, "utf8");
   const adapter = await readFile(adapterPath, "utf8");
   // 已经有运行时就不重复执行：tokenlens.js 会挂新的事件监听与观察器，重复注入会双份渲染。
-  const alive = await cdp.evaluate("typeof window.__codexPlusThroughputStatusLineRuntime === 'object'");
-  if (alive === true) return false;
-  await cdp.evaluate(adapter + "\n" + plugin);
+  // 但要一起看样式：addScriptToEvaluateOnNewDocument 的脚本在文档最早时机执行，
+  // 那时 document.head 还不存在，样式会装不上，状态栏就变成竖排的裸文本。
+  // 运行时在、样式不在 = 半注入状态，必须补一次。
+  const state = await cdp.evaluate(`(() => ({
+    runtime: typeof window.__codexPlusThroughputStatusLineRuntime === "object",
+    style: !!document.getElementById("codex-plus-throughput-statusline-style"),
+  }))()`);
+  if (state?.runtime === true && state?.style === true) return false;
+  if (state?.runtime === true) {
+    // 半注入：只补样式，不重跑整个脚本（否则会挂第二套监听器）。
+    await cdp.evaluate(`(() => {
+      const style = document.createElement("style");
+      style.id = "codex-plus-throughput-statusline-style";
+      style.dataset.version = "43";
+      style.dataset.codexPlusExt = "user-throughput-statusline";
+      style.textContent = window.__codexPlusThroughputStatusLineRuntime?.styleText || "";
+      if (style.textContent) document.head.appendChild(style);
+      return style.textContent.length;
+    })()`);
+  } else {
+    await cdp.evaluate(adapter + "\n" + plugin);
+  }
   log("TokenLens 已注入");
   return true;
 }

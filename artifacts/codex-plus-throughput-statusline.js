@@ -339,6 +339,15 @@
   function codexPlusUsageInstallStyle() {
     const existing = document.getElementById(codexPlusUsageStyleId);
     existing?.remove();
+    // 文档最早时机执行时 document.head 还不存在（readyState=loading，head 是 undefined），
+    // 此时 appendChild 会静默失败，样式永久丢失，状态栏就变成竖着堆叠的裸文本。
+    // 所以 head 没就绪时等 DOMContentLoaded 再装。
+    if (!document.head) {
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => codexPlusUsageInstallStyle(), { once: true });
+      }
+      return;
+    }
     const style = document.createElement("style");
     style.id = codexPlusUsageStyleId;
     style.dataset.version = String(codexPlusUsageVersion);
@@ -531,6 +540,9 @@
       #codex-plus-throughput-popover[data-theme="light"] .codex-plus-throughput-bar-tooltip{border-color:#cbd5e1;background:#fff;color:#0369a1;box-shadow:0 2px 8px rgba(15,23,42,.12)}
     `;
     document.head?.appendChild(style);
+    // 暴露样式文本：宿主在「运行时在、样式不在」的半注入状态下要能只补样式，
+    // 不重跑整个脚本（那会挂第二套事件监听与观察器）。
+    globalThis.__codexPlusThroughputStatusLineStyleText = style.textContent;
   }
 
   function codexPlusUsageFilledIcon(pathData, viewBox, width, height) {
@@ -3677,6 +3689,7 @@
   codexPlusUsageSchedule(300);
   window.__codexPlusThroughputStatusLineRuntime = {
     version: codexPlusUsageVersion,
+    styleText: globalThis.__codexPlusThroughputStatusLineStyleText || "",
     sync: () => codexPlusUsageSchedule(0),
     dispose() {
       codexPlusUsageState.disposed = true;

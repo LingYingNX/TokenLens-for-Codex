@@ -87,6 +87,11 @@ The market branch is only a submission copy. Do not treat it as the source branc
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
 - `data-codex-plus-ext` marks this script's own DOM (the status-line root) so `codexPlusUsageObserve` skips its own mutations; keep it on any inserted root that mutates often.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
+- `codexPlusUsageInstallStyle()` must not assume `document.head` exists. A script injected with
+  `Page.addScriptToEvaluateOnNewDocument` runs while `document.readyState === "loading"` and
+  `document.head` is `undefined`; `document.head?.appendChild(style)` then fails silently and
+  the status line degrades into unstyled, vertically stacked text. Install on `DOMContentLoaded`
+  instead, and expose the style text so a host can repair a half-injected page.
 - PowerShell scripts under `standalone/` must be UTF-8 with BOM. Windows PowerShell 5.1 reads
   BOM-less UTF-8 as ANSI, garbles the Chinese text and breaks quote pairing, so the script fails
   to parse. `install.ps1` must also prefer `pwsh` over `powershell.exe`.

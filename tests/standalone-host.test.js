@@ -65,7 +65,8 @@ test("宿主注入是幂等的", () => {
   assert.match(host, /__codexPlusThroughputStatusLineRuntime/, "重复注入前必须先检查运行时是否已存在");
   assert.match(host, /async function register\(cdp, session\)/);
   assert.match(host, /async function activate\(cdp\)/);
-  assert.match(host, /if \(alive === true\) return false;/, "已有运行时必须跳过重复注入");
+  // 守卫现在同时看运行时和样式：运行时在、样式不在 = 半注入，要补样式。
+  assert.match(host, /state\?\.runtime === true && state\?\.style === true/, "运行时与样式都在才跳过重复注入");
 });
 
 test("宿主路由实现了线程用量历史", () => {
