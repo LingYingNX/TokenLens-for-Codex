@@ -4,3 +4,9 @@ plugin-*.png
 # Scratch output from local diagnostics and A/B runs stays local.
 .tmp/
 artifacts/tmp/
+
+# agent-rules 验证脚本每次运行都会重写的本地结果。
+.agents/command-verification.json
+
+# standalone 注入器运行日志。
+standalone/tokenlens-host.log
