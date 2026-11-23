@@ -25,36 +25,48 @@ app.asar 里搜不到 `user_scripts` / `userscript`，插件系统只有 `.codex
 
 ## 调试端口怎么开的
 
-CDP 注入必须先有调试端口。官方只有一个开关入口，app.asar 里的原文是：
+CDP 注入必须先有调试端口。官方 Codex 没有任何前端扩展点，只能靠 CDP。
+
+有两条路，**本方案用第二条**：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| A. 环境变量 | `BUILD_FLAVOR=dev` + `CODEX_ELECTRON_CHROMIUM_SWITCHES` | **Dev flavor 被官方排除在应用内更新器之外**，更新器不再运行 |
+| **B. 执行别名（采用）** | 桌面图标指向 MSIX 的 `chatgpt-desktop.exe`，参数里带调试端口开关 | 无。仍是 prod flavor，`enableUpdater=true` |
+
+方案 A 的问题在官方 app.asar 里写得很直白：
 
 ```js
-let a = env.CODEX_ELECTRON_CHROMIUM_SWITCHES?.trim();
-if (buildFlavor !== Dev || !a) return [];   // 只有 Dev flavor 才读这个变量
+f = [Nightly, InternalAlpha, PublicBeta, Prod]   // 更新器白名单，没有 Dev
+m = { Nightly:{kind:"msix"}, InternalAlpha:{kind:"msix"}, PublicBeta:{kind:"store"}, Prod:{kind:"store"} }
+g = (e,t,r,n) => "false"!==n.CODEX_SPARKLE_ENABLED && f.includes(e) && t===r
 ```
 
-所以 `setup-env.ps1` 设两个用户级环境变量：
+实测启动日志能直接看到差异：
 
-| 变量 | 值 |
-|---|---|
-| `BUILD_FLAVOR` | `dev` |
-| `CODEX_ELECTRON_CHROMIUM_SWITCHES` | `{"remote-debugging-address":"127.0.0.1","remote-debugging-port":"9229","remote-allow-origins":"*"}` |
+```
+buildFlavor=dev  enableSparkle=false enableUpdater=false   ← 更新器停摆
+buildFlavor=prod enableSparkle=false enableUpdater=true    ← 正常
+```
 
-### dev flavor 的两个副作用（已实测）
+方案 B 的关键是 MSIX manifest 里的执行别名：
 
-1. **app-server 的库换成 `.codex\sqlite\codex-dev.db`**。里面是 169 条完整线程目录，
-   比 prod 的 `codex.db`（14 条近期）更全，**不丢历史**。
-2. **应用内自动更新关闭**（Sparkle / Windows Store updater）。官方 asar 里
-   `shouldIncludeWindowsUpdater` 只在 prod/beta/nightly 等 flavor 启用。
-   微软商店的更新入口不受影响。
+```xml
+<desktop:ExecutionAlias Alias="chatgpt-desktop.exe" />
+```
+
+它是 `%LOCALAPPDATA%\Microsoft\WindowsApps\chatgpt-desktop.exe` 处的真实可执行入口，
+**带参数有效**；而 AUMID 激活（`shell:AppsFolder\...!App`、开始菜单、任务栏）会忽略参数。
+所以桌面快捷方式指向这个别名，图标和点击体验都不变。
 
 ### 试过但走不通的路
 
 | 方案 | 结果 |
 |---|---|
-| 命令行 `--remote-debugging-port` | 要改启动方式，等于换了个启动器 |
+| 命令行 `--remote-debugging-port` 直接跑 `ChatGPT.exe` | 要改启动方式，等于换了个启动器 |
 | `NODE_OPTIONS=--require` 注入 Electron main 进程 | **Electron fuse 已禁用**（`EnableNodeOptionsEnvironmentVariable = 0`），不执行 |
 | `CODEX_ELECTRON_CHROMIUM_SWITCHES` 单独设 | 官方只在 Dev flavor 读，无效 |
-
+| 改 `app.asar` | `WindowsApps` 目录 TrustedInstaller 拥有，不可写；且完整性校验开启 |
 ## 踩过的坑（别再踩）
 
 1. **启动目标必须是 `ChatGPT.exe`**。`Codex.exe` 只有 20KB，是 windows-update trampoline，
@@ -82,10 +94,13 @@ pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1
 
 装完得到：
 
-- 用户级环境变量（`BUILD_FLAVOR` / `CODEX_ELECTRON_CHROMIUM_SWITCHES`）。
-- 计划任务 `TokenLens Host` —— 登录 30 秒后常驻等待 Codex。
+- 桌面 `ChatGPT.lnk` 指向 MSIX 执行别名并带上调试端口参数（原图标备份为 `ChatGPT.lnk.bak-tokenlens`）。
+- 计划任务 `TokenLens Host` —— 登录 30 秒后常驻等待 Codex，之后每分钟自愈一次。
 
-**重启 Codex**（环境变量在进程启动时读取），之后正常用就行。
+**之后双击桌面的 ChatGPT 图标启动 Codex 就行**，后台宿主会自动附着并注入。
+
+> 开始菜单 / 任务栏里的 Codex 项走 AUMID 激活，会忽略启动参数，那样开的端口没有 TokenLens。
+> 需要带插件就用桌面图标启动。
 
 卸载：`pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1 -Uninstall`
 
@@ -98,7 +113,7 @@ node .\standalone\tokenlens-host.mjs
 宿主行为：
 
 - Codex 没在跑 → 等着。
-- Codex 在跑但没端口 → 提示去跑 `setup-env.ps1` 并重启，**继续等**，不退出也不打断。
+- Codex 在跑但没端口 → 提示用桌面图标启动，**继续等**，不退出也不打断。
 - CDP 断开（Codex 被手动关掉）→ 等它回来并重新附着。
 - 端口始终起不来 → 记日志后退出，**不循环重启**。
 
@@ -134,7 +149,7 @@ node .\standalone\tools\check.mjs
 | `tokenlens-host.mjs` | Node 宿主：等待/附着 Codex、CDP 注入、读 rollout 算线程历史 |
 | `tokenlens-host-adapter.js` | renderer 适配层：补 `codexPlus` / `__codexSessionDeleteBridge` |
 | `rollout-history.mjs` | 从 rollout 还原线程用量历史（单次调用量口径） |
-| `setup-env.ps1` | 设置/撤销环境变量 |
+| `setup-launcher.ps1` | 配置/撤销桌面快捷方式（执行别名 + 调试端口参数） |
 | `install.ps1` | 安装/卸载器 |
 | `start-tokenlens.cmd` | 手动启动宿主用 |
 | `tools/check.mjs` | 端到端验证 |
@@ -167,8 +182,5 @@ node .\standalone\tools\check.mjs
 - Magpie 用量完全依赖 `http://127.0.0.1:3425` 在跑；没起来时状态栏的用量区显示空。
 - 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示，这是插件原有行为。
 - 注入需要本地调试端口，只监听 127.0.0.1。介意的话别用这个方案。
-- dev flavor 下 Codex 应用内不弹更新提示，得从微软商店更新。
-  原因是官方把 Dev 排除在更新器白名单外（app.asar 里是
-  `[Nightly, InternalAlpha, PublicBeta, Prod]`），不是本方案关掉的。
 - 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示 —— 这是插件原有行为，
   2026-11-23 已确认保留。

@@ -43,7 +43,7 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `tests/*.test.js` | Contract and calculation tests for history, live calls, ranking, chart scale, context, global usage, theme and artifact sync |
 | `standalone/tokenlens-host.mjs` | Node host for the official Codex app: waits for the debug port, attaches, injects over CDP, reads rollout history |
 | `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official Codex app lacks |
-| `standalone/setup-env.ps1` | Sets/clears the env vars that make Codex open the debug port on a normal launch |
+| `standalone/setup-launcher.ps1` | Points the desktop shortcut at the MSIX execution alias with the debug-port switches |
 | `standalone/rollout-history.mjs` | Rebuilds thread usage history from rollout files (per-call token amounts) |
 | `standalone/tools/check.mjs` | Live end-to-end check against a running Codex |
 | `README.md` | Install steps and feature list |
@@ -100,9 +100,15 @@ The market branch is only a submission copy. Do not treat it as the source branc
   to parse. `install.ps1` must also prefer `pwsh` over `powershell.exe`.
 - The host never launches Codex and never terminates it. The user starts Codex normally; the host
   only attaches once the debug port is up.
-- The debug port comes from the official `CODEX_ELECTRON_CHROMIUM_SWITCHES` env var, which the app
-  reads only when `BUILD_FLAVOR=dev`. `setup-env.ps1` sets both. Do not pass
-  `--remote-debugging-port` on the command line instead: that changes how the user starts Codex.
+- The debug port comes from the MSIX execution alias `chatgpt-desktop.exe` with command-line
+  switches, configured by `setup-launcher.ps1` on the desktop shortcut. Keep the app in its
+  `prod` flavor: `BUILD_FLAVOR=dev` would enable the port through
+  `CODEX_ELECTRON_CHROMIUM_SWITCHES`, but the official updater whitelist is
+  `[Nightly, InternalAlpha, PublicBeta, Prod]`, so Dev turns the in-app updater off
+  (`enableUpdater=false`). The execution alias keeps `enableUpdater=true`.
+- AUMID activation (`shell:AppsFolder\...!App`, Start menu, taskbar) ignores command-line
+  arguments. Only the execution alias and the desktop shortcut that points at it can carry
+  the debug port.
 - `NODE_OPTIONS=--require` cannot patch the Electron main process here: the
   `EnableNodeOptionsEnvironmentVariable` fuse is disabled, so the file is never loaded.
 - Injection must be idempotent: `tokenlens.js` has no internal guard, so the host checks
@@ -155,7 +161,6 @@ No scoped `AGENTS.md` files exist. Add one when a directory gains its own rules.
 - The call chart renders at most the latest 200 calls; TOP 3 still ranks the complete merged sample set.
 - In-memory state keeps at most 32 threads and 512 live call samples.
 - Provider batches shorter than `1000 ms` or `30` output tokens are ignored for speed; the status line may briefly show `--` rather than a synthetic peak.
-- The official Codex app opens its local debug port only in the `dev` build flavor, and that
-  flavor is excluded from the in-app updater (the app's own updater list is
-  `[Nightly, InternalAlpha, PublicBeta, Prod]`). Microsoft Store updates still work, because the
-  app is an MSIX package. Accepted trade-off (2026-11-23).
+- The desktop shortcut is the only launch path that carries the debug port. The Start menu and
+  taskbar entries activate the app by AUMID, which ignores command-line arguments, so Codex
+  started that way runs without TokenLens.

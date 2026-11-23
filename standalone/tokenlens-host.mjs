@@ -3,7 +3,7 @@
 // 铁律（每一条都对应过一次真实故障）：
 //   1. 绝不杀 Codex。旧版是「端口没就绪 → 杀 Codex → 再启动」的无限循环，
 //      那就是「启动几秒后 Codex 闪退」的真正原因。
-//   2. 绝不自己启动 Codex。用户正常点图标启动，端口由 setup-env.ps1 的环境变量打开。
+//   2. 绝不自己启动 Codex。用户双击桌面图标启动，端口由启动参数打开。
 //   3. 注入必须幂等。tokenlens.js 没有自带守卫，重复 evaluate 会渲染双份状态栏。
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -240,7 +240,7 @@ async function waitForPage(timeoutMs) {
 }
 
 // 只探测 Codex 安装位置用于日志。宿主不再自己启动 Codex——正常启动由用户点图标，
-// 调试端口由 setup-env.ps1 设的环境变量打开。
+// 调试端口由桌面快捷方式里的启动参数打开（见 setup-launcher.ps1）。
 async function getPackage() {
   const installLocation = await new Promise((resolve, reject) => {
     execFile(
@@ -261,7 +261,7 @@ async function getPackage() {
 }
 
 // 检查 Codex 是否带着调试端口在跑。
-// 正常启动由用户自己点图标，端口靠 setup-env.ps1 设的环境变量打开；
+// 正常启动由用户自己点桌面图标，端口靠快捷方式里的启动参数打开；
 // 宿主不主动启动 Codex，也绝不杀 Codex。
 async function codexHasDebugPort() {
   try {
@@ -340,7 +340,7 @@ async function main() {
   // 重启它之后端口就会出现。宿主一直等，只有用户主动卸载才停。
   let page = await waitForPage(2000);
   if (!page) {
-    log("等待 Codex 启动（正常点开始菜单 / 桌面图标即可，调试端口由环境变量自动打开）…");
+    log("等待 Codex 启动（双击桌面 ChatGPT 图标即可，调试端口由启动参数打开）…");
     let hinted = false;
     const deadline = Date.now() + 3600000;
     while (Date.now() < deadline && !page) {
@@ -348,7 +348,7 @@ async function main() {
       page = await waitForPage(1000);
       if (!page && !hinted && (await codexRunning())) {
         hinted = true;
-        log("检测到 Codex 在运行但没有调试端口：请运行 setup-env.ps1，然后完全退出并重启 Codex。宿主继续等待。");
+        log("检测到 Codex 在运行但没有调试端口：请用桌面 ChatGPT 图标启动（它带调试端口参数），或完全退出 Codex 后重开。宿主继续等待。");
       }
     }
     if (!page) {
