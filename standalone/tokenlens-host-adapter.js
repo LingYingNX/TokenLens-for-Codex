@@ -53,7 +53,9 @@
     if (!usage) return;
     const total = usage.total || usage;
     const last = usage.last || total;
-    const contextTokens = Number(last?.totalTokens ?? last?.total_tokens ?? total?.totalTokens ?? total?.total_tokens);
+    // 上下文占用取「本次调用」的 token 数（last），不是线程累计量（total）。
+    // 用累计量会让占用率直接顶到 100%。
+    const contextTokens = Number(last?.totalTokens ?? last?.total_tokens);
     const contextWindow = Number(usage.modelContextWindow ?? usage.model_context_window);
     if (!Number.isFinite(contextTokens) && !Number.isFinite(contextWindow)) return;
     liveUsage = {
@@ -74,10 +76,23 @@
       return Promise.resolve({ codexAppUsageStatusLine: true });
     }
     if (name === "/thread-usage-live") {
-      const events = liveUsage
-        ? [{ total_tokens: liveUsage.totalTokens, context_window: liveUsage.contextWindow }]
-        : [];
-      return Promise.resolve({ status: "ok", events });
+      if (liveUsage) {
+        return Promise.resolve({
+          status: "ok",
+          events: [{ total_tokens: liveUsage.totalTokens, context_window: liveUsage.contextWindow }],
+        });
+      }
+      // 页面刚刷新时还没收到任何用量事件，live 上下文是空的。
+      // 回落到宿主的历史路由取最后一条：那是线程最后的上下文占用与窗口。
+      return callHost("/thread-usage-live", args).then((result) => {
+        if (result?.status === "ok" && Array.isArray(result.events) && result.events.length) {
+          liveUsage = {
+            totalTokens: Number(result.events[result.events.length - 1]?.total_tokens) || null,
+            contextWindow: Number(result.events[result.events.length - 1]?.context_window) || null,
+          };
+        }
+        return result;
+      });
     }
     if (name === "/thread-usage-history") {
       return callHost(name, args);

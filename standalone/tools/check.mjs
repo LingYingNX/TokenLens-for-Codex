@@ -4,6 +4,10 @@
 //   node standalone/tools/check.mjs
 //
 // 退出码 0 = 全绿；非 0 = 有检查项没过。
+//
+// 注意：事件链验证会发一条合成的 thread/tokenUsage/updated。
+// 它必须用唯一累计值才能穿过 tokenlens.js 的 appliedTotals 去重，
+// 但生效后会真的累加进本轮用量，所以最后必须刷新页面重置内存状态。
 import { findPage, Cdp, sleep } from "./cdp.mjs";
 
 const port = Number(process.env.TOKENLENS_CDP_PORT || 9229);
@@ -28,41 +32,65 @@ const runtime = await cdp.evaluate(`(() => ({
   standalone: window.__tokenlensStandalone === true,
 }))()`);
 check("宿主适配层已装载", runtime?.codexPlus && runtime?.bridge, JSON.stringify(runtime));
-check("tokenlens.js 运行时已建立", runtime?.runtime === true, "version " + (runtime?.version ?? "-"));
+check("tokenlens.js 运行时已建立", runtime?.runtime === true, JSON.stringify(runtime));
 
 // 2. 状态栏只有一个实例（重复注入会渲染两份）
 const dom = await cdp.evaluate(`(() => ({
   statusLines: document.querySelectorAll("#codex-plus-throughput-statusline").length,
   popovers: document.querySelectorAll("#codex-plus-throughput-popover").length,
-  styles: document.querySelectorAll("#codex-plus-throughput-statusline-style").length,
   placement: document.querySelector("[data-codex-composer-root]")?.getAttribute("data-composer-placement") || null,
   threadId: document.querySelector("[data-above-composer-conversation-id]")?.getAttribute("data-above-composer-conversation-id") || null,
 }))()`);
 check("状态栏没有重复实例", dom?.statusLines <= 1, JSON.stringify(dom));
 
-// 3. 官方事件流能驱动吞吐速度
-const speed = await cdp.evaluate(`(async () => {
-  const read = () => document.getElementById("codex-plus-throughput-statusline")?.textContent.replace(/\\s+/g, " ").trim() || "";
-  const before = read();
+// 3. 官方事件流能驱动状态栏
+// 用气泡层里的「输出」token 数做断言：它会随事件累加，容易检测。
+// 状态栏上的百分比是缓存命中率，单调累加不会回落，不能用来做「变化」断言。
+// 合成事件必须用唯一累计值，否则 tokenlens.js 的 appliedTotals 会整条丢弃。
+// 它生效后会真的累加进本轮用量，所以第 6 步必须刷新页面重置内存状态。
+const eventProbe = await cdp.evaluate(`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const readOutput = async () => {
+    const btn = document.querySelector("#codex-plus-throughput-statusline button");
+    if (btn) {
+      btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await sleep(900);
+    }
+    const pop = document.getElementById("codex-plus-throughput-popover");
+    const text = pop?.textContent.replace(/\\s+/g, " ").trim() || "";
+    const match = text.match(/输出([\\d.]+)([KMB]?)/);
+    return { text: text.slice(0, 90), output: match ? Number(match[1]) : null };
+  };
+  const before = await readOutput();
   const threadId = document.querySelector("[data-above-composer-conversation-id]")?.getAttribute("data-above-composer-conversation-id");
+
+  // 唯一累计值 + 一大笔输出：输出 token 会明显增长。
+  const probe = Date.now() * 1000 + 4242;
   window.postMessage({
     type: "mcp-notification",
     hostId: "local",
     method: "thread/tokenUsage/updated",
     params: {
       threadId,
-      turnId: "tokenlens-check",
       tokenUsage: {
-        total: { inputTokens: 1000, cachedInputTokens: 900, outputTokens: 100, totalTokens: 1100 },
-        last: { inputTokens: 1000, cachedInputTokens: 900, outputTokens: 100, totalTokens: 1100 },
+        total: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 9876543, totalTokens: 9876543 },
+        last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 9876543, totalTokens: 9876543 },
         modelContextWindow: 486400,
       },
     },
   }, "*");
-  await new Promise((r) => setTimeout(r, 2500));
-  return { before, after: read() };
+  await sleep(2500);
+  const after = await readOutput();
+  return { before, after };
 })()`);
-check("官方事件流驱动状态栏", speed?.before !== speed?.after, JSON.stringify(speed));
+check(
+  "官方事件流驱动状态栏",
+  typeof eventProbe?.before?.output === "number"
+    && typeof eventProbe?.after?.output === "number"
+    && eventProbe.after.output > eventProbe.before.output,
+  JSON.stringify(eventProbe),
+);
 
 // 4. Magpie 用量源可达（经官方 appServices.httpFetch）
 const magpie = await cdp.evaluate(`(async () => {
@@ -104,12 +132,55 @@ const history = await cdp.evaluate(`(async () => {
   try {
     const result = await window.codexPlus.call("/thread-usage-history", { session_id: "01a1bf10-14a7-7582-a56f-679764297d68" });
     const rows = Array.isArray(result?.history) ? result.history : [];
-    return { rows: rows.length, last: rows[rows.length - 1] || null };
+    const totals = rows.map((r) => Number(r?.usage?.total_tokens || 0)).sort((a, b) => b - a);
+    return {
+      rows: rows.length,
+      maxPerCall: totals[0] ?? null,
+      last: rows[rows.length - 1] || null,
+    };
   } catch (error) {
     return { error: String(error?.message || error) };
   }
 })()`);
-check("宿主路由返回线程用量历史", (history?.rows ?? 0) > 0, JSON.stringify(history)?.slice(0, 220));
+check("宿主路由返回线程用量历史", (history?.rows ?? 0) > 0, JSON.stringify(history)?.slice(0, 200));
+// 单次调用量必须在合理量级：线程累计量（9000 多万）绝不能出现在这里。
+check(
+  "历史样本是单次调用量而非线程累计量",
+  typeof history?.maxPerCall === "number" && history.maxPerCall > 0 && history.maxPerCall < 5_000_000,
+  "maxPerCall=" + history?.maxPerCall,
+);
+
+// 6. 刷新页面重置内存状态，清掉第 3 步合成事件的污染
+await cdp.send("Page.enable");
+await cdp.send("Page.reload", { ignoreCache: true });
+await sleep(10000);
+await cdp.evaluate(`(async () => {
+  const item = document.querySelector("[data-app-action-sidebar-thread-id]");
+  if (item) (item.querySelector("button") || item).click();
+  await new Promise((r) => setTimeout(r, 4000));
+  return true;
+})()`);
+// 上下文占用显示在气泡层（形如 91.4%/486.4K），状态栏上的是缓存命中率。
+const restored = await cdp.evaluate(`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const btn = document.querySelector("#codex-plus-throughput-statusline button");
+  if (btn) {
+    btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await sleep(1200);
+  }
+  const pop = document.getElementById("codex-plus-throughput-popover");
+  const text = pop?.textContent.replace(/\\s+/g, " ").trim() || "";
+  return { text: text.slice(0, 120), contextPercent: text.match(/([\\d.]+)%\\/([\\d.]+[KMB])/)?.[1] ?? "" };
+})()`);
+const expectedPercent = history?.last?.usage?.total_tokens && history?.last?.usage?.contextLimit
+  ? (history.last.usage.total_tokens / history.last.usage.contextLimit * 100).toFixed(1)
+  : "";
+check(
+  "刷新后上下文占用回到真实数值",
+  expectedPercent ? restored?.contextPercent === expectedPercent : true,
+  JSON.stringify({ restored, expectedPercent }),
+);
 
 // 汇总
 let failed = 0;

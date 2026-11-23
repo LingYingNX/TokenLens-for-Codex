@@ -414,6 +414,21 @@ async function handleHostCall(cdp, rawPayload) {
     let payload;
     if (route === "/thread-usage-history") {
       payload = { history: await readThreadUsageHistory(String(args?.session_id || "")) };
+    } else if (route === "/thread-usage-live") {
+      // 页面刚刷新时官方还没推任何用量事件，用历史最后一条兜底。
+      const history = await readThreadUsageHistory(String(args?.session_id || ""));
+      const last = history[history.length - 1];
+      payload = {
+        status: "ok",
+        events: last
+          ? [{
+            // 上下文占用是「单次调用的 token 数」，不是线程累计量。
+            // 用累计量会让占用率直接顶到 100%。
+            total_tokens: Number(last.usage?.total_tokens || 0),
+            context_window: Number(last.usage?.contextLimit || 0),
+          }]
+          : [],
+      };
     } else {
       payload = { error: "standalone: 不支持的宿主路由 " + route };
     }

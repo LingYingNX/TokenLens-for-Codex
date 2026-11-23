@@ -149,6 +149,22 @@ test("安装器不再创建桌面快捷方式", () => {
   assert.doesNotMatch(install, /CreateShortcut/, "不再需要启动器快捷方式");
   assert.match(install, /Register-ScheduledTask/, "仍需注册后台宿主计划任务");
 });
+
+test("live 上下文是单次占用量，不是线程累计量", () => {
+  // 踩过的坑：live 路由把 thread_token_usage（线程累计 9167 万）当上下文占用，
+  // 占用率直接顶到 100%。上下文占用应是单次调用的 token 数（44 万）。
+  const adapter = readFileSync(path.join(repo, "standalone", "tokenlens-host-adapter.js"), "utf8");
+  assert.match(adapter, /last\?\.totalTokens/, "live 上下文必须取 last 桶（单次调用量）");
+  assert.doesNotMatch(adapter, /total\?\.totalTokens \?\?/, "不得用 total 桶（累计量）当上下文占用");
+  assert.match(host, /total_tokens: Number\(last\.usage\?\.total_tokens \|\| 0\)/, "宿主 live 路由必须用单次调用量");
+  assert.doesNotMatch(host, /total_tokens: Number\(last\.usage\?\.contextUsed/, "不得用 contextUsed（累计量）当上下文占用");
+});
+
+test("宿主实现 /thread-usage-live 路由", () => {
+  // 页面刚刷新时官方还没推任何用量事件，live 上下文必须能从历史兜底。
+  assert.match(host, /route === "\/thread-usage-live"/, "必须实现 /thread-usage-live");
+  assert.match(host, /context_window/, "live 路由必须给出上下文窗口");
+});
 test("启动脚本用 node 跑宿主", () => {
   assert.match(launcher, /tokenlens-host\.mjs/);
   assert.doesNotMatch(launcher, /tokenlens-host\.ps1/, "旧的 PowerShell 宿主已被移除");

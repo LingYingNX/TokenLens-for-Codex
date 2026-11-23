@@ -105,7 +105,21 @@ node .\standalone\tokenlens-host.mjs
 node .\standalone\tools\check.mjs
 ```
 
-对着正在运行的 Codex 跑，输出 6 项检查（适配层、运行时、单实例、事件链、Magpie、线程历史）。
+对着正在运行的 Codex 跑，输出 8 项检查：
+
+| 检查项 | 断言 |
+|---|---|
+| 宿主适配层已装载 | `codexPlus` / `__codexSessionDeleteBridge` 就位 |
+| tokenlens.js 运行时已建立 | 运行时对象存在 |
+| 状态栏没有重复实例 | DOM 里只有一份 |
+| 官方事件流驱动状态栏 | 合成事件后气泡层输出 token 增长 |
+| Magpie 用量源可达 | 官方 `appServices.httpFetch` 返回 200 |
+| 宿主路由返回线程用量历史 | 历史行数 > 0 |
+| 历史样本是单次调用量 | 最大单次调用 < 500 万（累计量会是 9000 多万） |
+| 刷新后上下文占用回到真实数值 | 气泡层占用率等于 `total_tokens / contextLimit` |
+
+第 4 项会发一条合成的用量事件（它会真的累加进本轮用量），所以最后一步会刷新页面重置内存状态。
+连跑多次结果一致。
 全绿退出码为 0。状态栏只在**线程页**显示，验证前先用 `tools/enter-thread.mjs` 跳到线程。
 
 ## 文件
@@ -132,6 +146,9 @@ node .\standalone\tools\check.mjs
 | `turn_id` | 轮次归属 | 分轮聚合 |
 | `thread_token_usage` | 线程累计量 | `contextUsed`（上下文占用） |
 | `token_count.info.model_context_window` | 上下文窗口 | `contextLimit` |
+
+`/thread-usage-live` 的「上下文占用」同样用**单次调用量**（44 万），
+不是线程累计量（9167 万）。用累计量会让占用率直接顶到 100%。
 
 **不能用 `token_count.info.total_token_usage`** —— 那是整个线程的累计量
 （该线程已到 9167 万）。喂给 tokenlens.js 会让 TOP3 显示「9167.95万」这种

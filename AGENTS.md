@@ -80,6 +80,8 @@ The market branch is only a submission copy. Do not treat it as the source branc
   show thread-wide sums as if they were single calls.
 - The context window lives in `token_count.info.model_context_window`, and it can appear after
   the matching usage record, so read it in a separate pass.
+- The live context (`/thread-usage-live`) reports the **per-call** token count as the context
+  usage. Reporting the thread's cumulative total there pins the occupancy at 100%.
 - Usage deltas come from the `last` bucket of `thread/tokenUsage/updated` (`tokenUsage.last` against cumulative `total`); history dedupe keys on the cumulative `contextUsed`.
 - Throughput uses token-weighted settled per-call decode windows. The whole-turn window is only a fallback when no settled call timeline exists.
 - The status-line setting comes from the host; theme preference persists under `tokenlens-theme`.
