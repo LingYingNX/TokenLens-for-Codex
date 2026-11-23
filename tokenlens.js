@@ -121,6 +121,7 @@
     dispatcher: null,
     unsubscribers: [],
     hideTimer: 0,
+    placementGraceTimer: 0,
     toolExpanded: false,
     tokenExpanded: false,
     theme: codexPlusUsageReadTheme(),
@@ -2996,6 +2997,7 @@
     parts.customEnd.addEventListener("change", updateCustomRange);
     popover.addEventListener("pointerenter", () => {
       clearTimeout(codexPlusUsageState.hideTimer);
+      codexPlusUsageClearPlacementGrace();
       codexPlusUsageState.hideTimer = 0;
     });
     popover.addEventListener("pointerleave", () => codexPlusUsageHidePopoverSoon());
@@ -3565,16 +3567,46 @@
       && codexPlusSettings().usageStatusLine === true;
   }
 
+  // 切换会话时 Codex 会把 Composer 整体拆掉重建，这一瞬间既有 card 也可能没有 threadId。
+  // 立刻隐藏会让状态栏闪一下再出现，所以给一段宽限期，期间保持原样不动。
+  const codexPlusUsagePlacementGraceMs = 1200;
+  // 宽限期内用更短的间隔重新探测，新会话一挂上就立刻显示。
+  const codexPlusUsagePlacementProbeMs = 200;
+
+  function codexPlusUsageClearPlacementGrace() {
+    if (!codexPlusUsageState.placementGraceTimer) return;
+    window.clearTimeout(codexPlusUsageState.placementGraceTimer);
+    codexPlusUsageState.placementGraceTimer = 0;
+  }
+
+
   function codexPlusUsageSyncPlacement() {
     // 宿主重注入会覆盖 sync 全局，这里补挂一次，保证开关仍然能通知到本脚本。
     codexPlusInstallUsageStatusLineSync();
     const card = codexPlusUsageEnabled() ? codexPlusUsageComposerCard() : null;
     const threadId = codexPlusUsageThreadId(card);
     if (!card || !threadId) {
-      codexPlusUsageHide();
-      codexPlusUsageState.threadId = "";
+      if (!codexPlusUsageState.node?.isConnected) {
+        codexPlusUsageClearPlacementGrace();
+        codexPlusUsageHide();
+        codexPlusUsageState.threadId = "";
+        return null;
+      }
+      // 切换会话时 Composer 会被整体拆掉重建，这一瞬间 card 或 threadId 会短暂为空。
+      // 立刻隐藏会让状态栏闪一下再出现，所以给一段宽限期：期间保持原样，并且用短间隔
+      // 重新同步，等新会话挂上来就能立刻显示。首页没有当前会话，宽限期结束后依然会隐藏。
+      if (!codexPlusUsageState.placementGraceTimer) {
+        codexPlusUsageState.placementGraceTimer = window.setTimeout(() => {
+          codexPlusUsageState.placementGraceTimer = 0;
+          if (!codexPlusUsageState.node?.isConnected) return;
+          codexPlusUsageHide();
+          codexPlusUsageState.threadId = "";
+        }, codexPlusUsagePlacementGraceMs);
+      }
+      codexPlusUsageSchedule(codexPlusUsagePlacementProbeMs);
       return null;
     }
+    codexPlusUsageClearPlacementGrace();
     const threadChanged = codexPlusUsageState.threadId !== threadId;
     const footerHost = codexPlusUsageComposerFooterHost(card);
     const changed = threadChanged

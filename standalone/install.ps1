@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSCommandPath
 $hostScript = Join-Path $root "tokenlens-host.mjs"
 $setupEnv = Join-Path $root "setup-env.ps1"
+$vbsLauncher = Join-Path $root "tokenlens-host.vbs"
 $taskName = "TokenLens Host"
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktop "ChatGPT.lnk"
@@ -36,6 +37,7 @@ if ($Uninstall) {
 
 if (-not (Test-Path -LiteralPath $hostScript)) { throw "missing tokenlens-host.mjs" }
 if (-not (Test-Path -LiteralPath $setupEnv)) { throw "missing setup-env.ps1" }
+if (-not (Test-Path -LiteralPath $vbsLauncher)) { throw "missing tokenlens-host.vbs" }
 
 # 0. 桌面快捷方式保持官方原样（B 方案靠环境变量开端口，任何入口都有效，不需要改快捷方式）。
 if (Test-Path -LiteralPath $shortcutBackup) {
@@ -54,7 +56,12 @@ if (Test-Path -LiteralPath $shortcutBackup) {
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) { throw "node.exe not found (Node.js missing or not in PATH)" }
 
-$action = New-ScheduledTaskAction -Execute $node -Argument ('"{0}"' -f $hostScript)
+# 用 wscript.exe 拉起 .vbs，由 VBScript 以隐藏窗口启动 node —— 直接让计划任务跑
+# node.exe 会在桌面弹出一个控制台黑窗口。wscript.exe 是 GUI 子系统程序，不会。
+$wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+if (-not (Test-Path -LiteralPath $wscript)) { throw "wscript.exe not found" }
+
+$action = New-ScheduledTaskAction -Execute $wscript -Argument ('//B "{0}"' -f $vbsLauncher)
 
 $logon = New-ScheduledTaskTrigger -AtLogOn
 $logon.Delay = "PT30S"

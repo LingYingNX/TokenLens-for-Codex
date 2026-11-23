@@ -188,7 +188,22 @@ test("宿主实现 /thread-usage-live 路由", () => {
   assert.match(host, /route === "\/thread-usage-live"/, "必须实现 /thread-usage-live");
   assert.match(host, /context_window/, "live 路由必须给出上下文窗口");
 });
-test("启动脚本用 node 跑宿主", () => {
-  assert.match(launcher, /tokenlens-host\.mjs/);
-  assert.doesNotMatch(launcher, /tokenlens-host\.ps1/, "旧的 PowerShell 宿主已被移除");
+test("启动脚本走 VBS 无窗口启动宿主", () => {
+  const cmd = readFileSync(path.join(repo, "standalone", "start-tokenlens.cmd"), "utf8");
+  assert.match(cmd, /wscript\.exe/, "必须用 wscript 启动，否则会弹出 node 控制台黑窗口");
+  assert.match(cmd, /tokenlens-host\.vbs/, "必须调用 VBS 包装");
+  assert.doesNotMatch(cmd, /^\s*start .*node /m, "不得直接 start node，那会留下黑窗口");
+});
+
+test("计划任务用 wscript 拉起 VBS，不直接跑 node", () => {
+  const install = readFileSync(path.join(repo, "standalone", "install.ps1"), "utf8");
+  assert.match(install, /wscript\.exe/, "计划任务必须经 wscript，避免控制台窗口");
+  assert.match(install, /tokenlens-host\.vbs/, "计划任务必须指向 VBS 包装");
+  assert.doesNotMatch(install, /New-ScheduledTaskAction -Execute \$node/, "不得让计划任务直接跑 node.exe");
+});
+
+test("VBS 用隐藏窗口启动 node", () => {
+  const vbs = readFileSync(path.join(repo, "standalone", "tokenlens-host.vbs"), "utf8");
+  assert.match(vbs, /shell\.Run .*,\s*0,\s*False/, "窗口样式必须是 0（隐藏）且不等待");
+  assert.match(vbs, /tokenlens-host\.mjs/, "必须启动宿主脚本");
 });

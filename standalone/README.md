@@ -1,191 +1,212 @@
-# TokenLens 官方 Codex 宿主
+# TokenLens for Codex（官方桌面版）
 
-把 TokenLens 吞吐状态栏装进**官方 Codex 桌面应用**（不是 Codex++）。
+把 TokenLens 的吞吐状态栏装进**官方 Codex 桌面应用**（微软商店的 MSIX 版）。
 
-**用法：正常启动 Codex 就行。** 后台宿主常驻，检测到 Codex 起来就自动附着并注入，
-不需要任何启动器、快捷方式或额外操作。
+装完以后：**用任何方式启动 Codex**（开始菜单、桌面图标、任务栏、`codex://` 链接），
+状态栏都会自动出现在输入框下方，不需要额外操作，也不需要改你的启动习惯。
 
-## 为什么需要这一层
+---
 
-Codex++ 宿主本体已被删除（2026-10-22），而官方 Codex 没有 UserScript 扩展点：
-app.asar 里搜不到 `user_scripts` / `userscript`，插件系统只有 `.codex-plugin/plugin.json`
-（skills / hooks / mcp），没有前端 DOM 注入类型。所以 `tokenlens.js` 只能靠 CDP 注入。
+## 它长什么样
 
-官方 Codex 原生提供了 tokenlens.js 需要的大部分能力：
+在对话框输入区下方显示一行：`12 tok/s · 93.0%`。点它可以展开面板，看缓存命中、
+上下文占用、工具耗时、逐次调用图表、TOP3 输出、每轮均值、以及按天的用量日历。
 
-| tokenlens.js 依赖 | 官方 Codex 现状 |
-|---|---|
-| `appServices.httpFetch` 取 Magpie 用量 | 有。webpack 模块 `GaA7`，tokenlens.js 自带解析器已能找到 |
-| `thread/tokenUsage/updated` 等事件流 | 有。官方通过 `mcp-notification` 推给 renderer |
-| 线程 ID（DOM） | 有。`[data-above-composer-conversation-id]` |
-| `window.codexPlus.call` 路由 | **没有** |
-| `window.__codexSessionDeleteBridge` | **没有** |
+状态栏**只在具体会话页显示**；首页（"和 Codex 一起工作"）没有当前会话，按设计不显示。
 
-适配层 `tokenlens-host-adapter.js` 只补这两条路由，tokenlens.js 本体一行不改。
+---
 
-## 调试端口怎么开的
+## 前置要求
 
-CDP 注入必须先有调试端口。官方 Codex 没有任何前端扩展点，只能靠 CDP。
+| 项 | 要求 | 检查方法 |
+|---|---|---|
+| 系统 | Windows 10 / 11 | — |
+| Codex | **微软商店版**（MSIX 安装，包名 `OpenAI.Codex`） | `Get-AppxPackage OpenAI.Codex` 有输出 |
+| Node.js | 18 或更高（用于后台宿主） | `node -v` 有输出 |
+| PowerShell | 5.1 或 7（系统自带就有） | — |
 
-端口有两条路，**本方案用第一条（环境变量）**，2026-11-23 用户拍板：
+> Codex 必须是商店版。从第三方下载的绿色版/安装包版本目录结构不同，本方案不适用。
 
-| 方案 | 做法 | 任意入口都有端口 | 应用内更新 |
-|---|---|---|---|
-| **A. 环境变量（采用）** | `BUILD_FLAVOR=dev` + `CODEX_ELECTRON_CHROMIUM_SWITCHES` | ✅ 是 | ❌ 停摆 |
-| B. 执行别名 | 桌面图标指向 `chatgpt-desktop.exe`，参数带端口开关 | ❌ 只有带参数的入口 | ✅ 正常 |
-
-选 A 是因为它满足唯一不能让步的要求：**用任何方式启动 Codex 都能注入**。
-代价是应用内更新器停摆 —— 这不是本方案关掉的，是 Dev flavor 的设计结果：
-
-```js
-f = [Nightly, InternalAlpha, PublicBeta, Prod]   // 更新器白名单，没有 Dev
-m = { Nightly:{kind:"msix"}, InternalAlpha:{kind:"msix"}, PublicBeta:{kind:"store"}, Prod:{kind:"store"} }
-g = (e,t,r,n) => "false"!==n.CODEX_SPARKLE_ENABLED && f.includes(e) && t===r
-```
-
-启动日志能直接看到差异：
-
-```
-buildFlavor=dev  enableSparkle=false enableUpdater=false   ← 更新器停摆（本方案）
-buildFlavor=prod enableSparkle=false enableUpdater=true    ← 正常
-```
-
-微软商店的更新不受影响：应用是 MSIX 包，由商店与 Windows 负责，与 flavor 无关。
-
-方案 B 走不通的原因不是它不好，而是它只能覆盖带参数的启动入口：
-MSIX manifest 里的 `<desktop:ExecutionAlias Alias="chatgpt-desktop.exe" />`
-（`%LOCALAPPDATA%\Microsoft\WindowsApps\chatgpt-desktop.exe`）是真实可执行入口，
-带参数有效；但 AUMID 激活（`shell:AppsFolder\...!App`、开始菜单、任务栏）会丢掉参数。
-实测混用两种入口还会开出第二个实例（10 进程 → 20 进程、2 个窗口），单实例锁不生效。
-
-环境变量只覆盖**新启动的进程**：改了之后要完全退出 Codex 再启动才生效。
-
-### 试过但走不通的路
-
-| 方案 | 结果 |
-|---|---|
-| 命令行 `--remote-debugging-port` 直接跑 `ChatGPT.exe` | 要改启动方式，等于换了个启动器；且 AUMID 入口根本传不进参数 |
-| `NODE_OPTIONS=--require` 注入 Electron main 进程 | **Electron fuse 已禁用**（`EnableNodeOptionsEnvironmentVariable = 0`），不执行 |
-| `CODEX_ELECTRON_CHROMIUM_SWITCHES` 不带 `BUILD_FLAVOR=dev` | 官方只在 Dev flavor 读，无效 |
-| 改 `app.asar` | `WindowsApps` 目录 TrustedInstaller 拥有，不可写；且完整性校验开启 |
-| 改 `AppxManifest.xml` | 包已签名 |
-| 进程启动触发（4688 审计 + 计划任务） | 要另开审计策略，且必须在 Codex 起来后杀掉重开，等于重演闪退事故 |
-| 应用内浏览器 CDP / app-server websocket | 拿不到 renderer DOM，注不进去 |
-
-## 踩过的坑（别再踩）
-
-1. **启动目标必须是 `ChatGPT.exe`**。`Codex.exe` 只有 20KB，是 windows-update trampoline，
-   给它 `--remote-debugging-port` 不会有任何效果，端口永远起不来。
-2. **失败绝不重试启动**。旧实现是「端口没就绪 → 杀 Codex → 再启动」的无限循环，
-   这就是「启动几秒后 Codex 闪退」的真正原因：Codex 是被 `Stop-Process` 主动杀的，
-   Windows 事件日志里没有它的崩溃记录。
-3. **注入必须幂等**。tokenlens.js 没有自带幂等守卫，重复 evaluate 会渲染双份状态栏。
-   宿主在 `activate()` 前先检查 `window.__codexPlusThroughputStatusLineRuntime`。
-4. **不要覆盖 `window.electronBridge`**。官方 bridge 明确拒绝裸 fetch：
-   「HTTP requests must use the HTTP fetch service.」覆盖它只会破坏宿主自己的通道。
-5. **注入时机早到没有 `document.head`**。`Page.addScriptToEvaluateOnNewDocument` 的脚本
-   在 `document.readyState === "loading"`、`document.head` 还是 `undefined` 时执行。
-   `document.head?.appendChild(style)` 会静默失败，样式永久丢失，状态栏就变成竖着堆叠的裸文本。
-   tokenlens.js 现在等 `DOMContentLoaded` 再装样式；宿主也会检查样式标签，
-   发现「运行时在、样式不在」的半注入状态时只补样式、不重跑整个脚本。
-6. **PowerShell 脚本要写 UTF-8 with BOM**。PS 5.1 按 ANSI 读无 BOM 的 UTF-8，
-   中文乱码会把引号配对搞错，脚本直接语法报错。
+---
 
 ## 安装
 
+### 1. 拿到仓库
+
+```powershell
+git clone https://github.com/LingYingNX/TokenLens-for-Codex.git
+cd TokenLens-for-Codex
+git checkout standalone-injector
+```
+
+没有 git 的话，在 GitHub 上切到 `standalone-injector` 分支，下载 ZIP 解压也行。
+
+### 2. 运行安装器
+
+在仓库根目录执行：
+
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1
+
+# 如果机器上没有 pwsh（PowerShell 7），用这个：
+powershell -ExecutionPolicy Bypass -File .\standalone\install.ps1
 ```
 
-装完得到：
+安装器做三件事：
 
-- 桌面 `ChatGPT.lnk` 指向 MSIX 执行别名并带上调试端口参数（原图标备份为 `ChatGPT.lnk.bak-tokenlens`）。
-- 计划任务 `TokenLens Host` —— 登录 30 秒后常驻等待 Codex，之后每分钟自愈一次。
+1. 设置两个**用户级**环境变量（`BUILD_FLAVOR=dev` + 调试端口开关）。
+2. 注册计划任务 `TokenLens Host`：登录时启动，之后每分钟确认一次在跑。
+3. 把桌面快捷方式还原成官方原样（本方案不需要改快捷方式）。
 
-**之后双击桌面的 ChatGPT 图标启动 Codex 就行**，后台宿主会自动附着并注入。
+不需要管理员权限。
 
-> 开始菜单 / 任务栏里的 Codex 项走 AUMID 激活，会忽略启动参数，那样开的端口没有 TokenLens。
-> 需要带插件就用桌面图标启动。
+### 3. 重启 Codex
 
-卸载：`pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1 -Uninstall`
+**完全退出** Codex（右键任务栏图标 → 退出，或任务管理器结束 `ChatGPT.exe`），
+然后照平时的方式启动。
 
-## 手动运行
+环境变量只在进程启动时读取，所以不彻底退出是没用的 —— 这是最常见的"装了没反应"。
 
-```powershell
-node .\standalone\tokenlens-host.mjs
-```
+---
 
-宿主行为：
-
-- Codex 没在跑 → 等着。
-- Codex 在跑但没端口 → 提示用桌面图标启动，**继续等**，不退出也不打断。
-- CDP 断开（Codex 被手动关掉）→ 等它回来并重新附着。
-- 端口始终起不来 → 记日志后退出，**不循环重启**。
-
-日志：`standalone/tokenlens-host.log`
-
-## 验证
+## 验证装好了
 
 ```powershell
 node .\standalone\tools\check.mjs
 ```
 
-对着正在运行的 Codex 跑，输出 8 项检查：
+对着正在运行的 Codex 执行，会输出 8 项检查：
 
-| 检查项 | 断言 |
+| 检查项 | 说明 |
 |---|---|
-| 宿主适配层已装载 | `codexPlus` / `__codexSessionDeleteBridge` 就位 |
-| tokenlens.js 运行时已建立 | 运行时对象存在 |
-| 状态栏没有重复实例 | DOM 里只有一份 |
-| 官方事件流驱动状态栏 | 合成事件后气泡层输出 token 增长 |
-| Magpie 用量源可达 | 官方 `appServices.httpFetch` 返回 200 |
-| 宿主路由返回线程用量历史 | 历史行数 > 0 |
-| 历史样本是单次调用量 | 最大单次调用 < 500 万（累计量会是 9000 多万） |
-| 刷新后上下文占用回到真实数值 | 气泡层占用率等于 `total_tokens / contextLimit` |
+| 宿主适配层已装载 | 注入层就位 |
+| tokenlens.js 运行时已建立 | 插件在跑 |
+| 状态栏没有重复实例 | 没被重复注入 |
+| 官方事件流驱动状态栏 | 能吃到用量事件 |
+| Magpie 用量源可达 | 可选的本地用量服务（没有就跳过） |
+| 宿主路由返回线程用量历史 | 能从会话记录里读出历史 |
+| 历史样本是单次调用量 | 数值口径正确 |
+| 刷新后上下文占用回到真实数值 | 刷新后能自愈 |
 
-第 4 项会发一条合成的用量事件（它会真的累加进本轮用量），所以最后一步会刷新页面重置内存状态。
-连跑多次结果一致。
-全绿退出码为 0。状态栏只在**线程页**显示，验证前先用 `tools/enter-thread.mjs` 跳到线程。
+全绿退出码 0。**状态栏只在会话页显示**，如果检查时停在首页，先跑
+`node .\standalone\tools\enter-thread.mjs` 让人帮你点进第一个会话。
 
-## 文件
+也可以直接肉眼看：随便打开一个已存在的对话，输入框下方应该有一行 `xx tok/s · yy%`。
+
+---
+
+## 日常使用
+
+- 正常用 Codex 就行，不用管后台。
+- 后台宿主是一个隐藏的 node 进程，**不会有黑窗口**。
+- 日志在 `standalone/tokenlens-host.log`，出问题先看它。
+- Codex 更新后插件自动继续工作（注入不依赖改安装目录）。
+
+---
+
+## 卸载
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1 -Uninstall
+```
+
+会清掉计划任务、两个环境变量，并还原桌面快捷方式。之后重启 Codex 即恢复原样。
+
+---
+
+## 它是怎么工作的（以及代价）
+
+官方 Codex **没有任何前端扩展点** —— `app.asar` 里搜不到 `user_scripts`，
+插件系统只有 `.codex-plugin/plugin.json`（skills / hooks / mcp），没有 DOM 注入类型。
+所以只能走 Chromium 的调试协议（CDP）把脚本注进渲染进程。
+
+完整链路：
+
+```
+环境变量 → Codex 自己开本地调试端口 9229（只监听 127.0.0.1）
+        → 计划任务常驻的 Node 宿主发现端口 → CDP 附着
+        → 注入适配层 + tokenlens.js → 状态栏出现
+```
+
+### 为什么必须 `BUILD_FLAVOR=dev`
+
+官方只在一个地方读调试开关，而且硬绑 Dev 分支。`app.asar` 原文：
+
+```js
+let a = env.CODEX_ELECTRON_CHROMIUM_SWITCHES?.trim();
+if (buildFlavor !== Dev || !a) return [];      // 只有 Dev 才读
+```
+
+### 代价：应用内更新器停摆
+
+Dev 不在官方更新器白名单里：
+
+```js
+f = [Nightly, InternalAlpha, PublicBeta, Prod]
+g = (e,t,r,n) => "false" !== n.CODEX_SPARKLE_ENABLED && f.includes(e) && t === r
+```
+
+所以 `enableUpdater=false`，Codex 不会再自己提示/执行更新。
+**这不是本方案关掉的，是 Dev 分支的设计结果。**
+
+微软商店更新照常：应用是 MSIX 包，由商店和 Windows 负责升级，与 flavor 无关。
+
+另一个副作用：Codex 的会话索引库会切到 `codex-dev.db`。实测里面是完整线程目录
+（本机 169 条，比 prod 库的 14 条更全），不丢历史。
+
+### 试过但走不通的路
+
+| 方案 | 结果 |
+|---|---|
+| 桌面快捷方式带上调试参数 | 只有从快捷方式启动才有效；开始菜单/任务栏走 AUMID 会丢掉参数，且混用两种入口会开出两个窗口 |
+| `NODE_OPTIONS=--require` 注入 Electron 主进程 | Electron fuse `EnableNodeOptionsEnvironmentVariable` 是关闭的，文件根本不加载 |
+| 只设 `CODEX_ELECTRON_CHROMIUM_SWITCHES` 不设 flavor | 官方只在 Dev 下读，无效 |
+| 改 `app.asar` | `WindowsApps` 目录属 TrustedInstaller，且开了完整性校验 |
+| 改 `AppxManifest.xml` | 包已签名 |
+| 进程启动触发（审计 + 计划任务） | 要另开审计策略，还得在 Codex 起来后杀掉重开 |
+| 应用内浏览器 CDP / app-server websocket | 拿不到渲染进程 DOM，注不进去 |
+
+---
+
+## 常见问题
+
+**装了没反应？**
+先确认 Codex 是**完全退出后重新启动**的（环境变量只在启动时读取）。
+再看 `standalone/tokenlens-host.log` 最后几行有没有「已连接 app://-/index.html」「TokenLens 已注入」。
+
+**首页看不到状态栏？**
+正常。首页没有当前会话，插件按设计只在会话页显示。随便打开一个对话就能看到。
+
+**状态栏出现两个？**
+说明注入了两次。重启计划任务即可：
+`Stop-ScheduledTask 'TokenLens Host'; Start-ScheduledTask 'TokenLens Host'`。
+宿主本身有幂等守卫，正常不会发生。
+
+**端口 9229 被占用？**
+换端口：改 `standalone/setup-env.ps1` 里的 `remote-debugging-port`，同时设环境变量
+`TOKENLENS_CDP_PORT`，然后重跑 `install.ps1`。
+
+**不想让应用内更新停摆？**
+那就只能牺牲「任意入口都有插件」：本仓库历史提交 `76395d0` 是另一条路线
+（桌面快捷方式指向 MSIX 执行别名 + 命令行参数，保持 prod flavor），
+代价是只有从那个快捷方式启动才有插件。两者不可兼得。
+
+---
+
+## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `tokenlens-host.mjs` | Node 宿主：等待/附着 Codex、CDP 注入、读 rollout 算线程历史 |
-| `tokenlens-host-adapter.js` | renderer 适配层：补 `codexPlus` / `__codexSessionDeleteBridge` |
-| `rollout-history.mjs` | 从 rollout 还原线程用量历史（单次调用量口径） |
-| `setup-env.ps1` | 配置/撤销环境变量（dev flavor + 调试端口开关） |
-| `install.ps1` | 安装/卸载器 |
-| `start-tokenlens.cmd` | 手动启动宿主用 |
-| `tools/check.mjs` | 端到端验证 |
-| `tools/cdp.mjs` | 最小 CDP 客户端（只用 Node 内置 WebSocket/fetch） |
-| `tools/enter-thread.mjs` | 辅助：跳到线程页（状态栏只在有 threadId 时渲染） |
+| `install.ps1` | 安装 / 卸载（`-Uninstall`） |
+| `setup-env.ps1` | 单独设置 / 撤销环境变量 |
+| `tokenlens-host.mjs` | 后台宿主：等端口 → CDP 附着 → 注入 |
+| `tokenlens-host.vbs` | 无窗口启动宿主（计划任务和手动启动都走它） |
+| `tokenlens-host-adapter.js` | 渲染进程适配层，只补官方缺的两条路由 |
+| `rollout-history.mjs` | 从会话记录还原线程用量历史 |
+| `start-tokenlens.cmd` | 手动启动宿主（也走 VBS，不弹窗） |
+| `tools/check.mjs` | 端到端验证（8 项） |
+| `tools/enter-thread.mjs` | 辅助：确保停在会话页 |
+| `tools/cdp.mjs` | 最小 CDP 客户端（只用 Node 内置 WebSocket） |
+| `tokenlens-host.log` | 运行日志 |
 
-## 用量历史的口径
-
-线程用量历史来自 rollout 文件的 `token_usage_record` 事件，**必须用单次调用量**：
-
-| rollout 字段 | 含义 | 用在哪 |
-|---|---|---|
-| `usage` | 单次调用量 | TOP3、柱状图、每轮统计 |
-| `turn_id` | 轮次归属 | 分轮聚合 |
-| `thread_token_usage` | 线程累计量 | `contextUsed`（上下文占用） |
-| `token_count.info.model_context_window` | 上下文窗口 | `contextLimit` |
-
-`/thread-usage-live` 的「上下文占用」同样用**单次调用量**（44 万），
-不是线程累计量（9167 万）。用累计量会让占用率直接顶到 100%。
-
-**不能用 `token_count.info.total_token_usage`** —— 那是整个线程的累计量
-（该线程已到 9167 万）。喂给 tokenlens.js 会让 TOP3 显示「9167.95万」这种
-不可能的单次调用，柱状图刻度顶到 10240 万。这个坑踩过一次，`tests/rollout-history.test.js` 钉住了它。
-
-## 已知限制
-
-- 宿主读磁盘 rollout 文件算线程用量历史，等于 Codex++ 旧宿主的 `/thread-usage-history` 行为；
-- 计划任务每分钟拉一次宿主，宿主本身常驻等待 Codex（`MultipleInstances=IgnoreNew` 保证不重复）。
-  压缩切换后分段历史仍可能不全。
-- Magpie 用量完全依赖 `http://127.0.0.1:3425` 在跑；没起来时状态栏的用量区显示空。
-- 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示，这是插件原有行为。
-- 注入需要本地调试端口，只监听 127.0.0.1。介意的话别用这个方案。
-- 状态栏只在**线程页**显示（tokenlens.js 要求有 threadId），首页不显示 —— 这是插件原有行为，
-  2026-11-23 已确认保留。
+插件本体是仓库根目录的 `tokenlens.js`（单文件 UserScript，宿主无关）。
