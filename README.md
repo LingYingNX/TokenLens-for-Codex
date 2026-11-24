@@ -2,6 +2,29 @@
 
 在 Codex++ 底栏显示实时 `tok/s`，悬停查看本轮吞吐、工具分类、Token 与缓存，以及 Codex 会话的累计消耗。
 
+## 先确认分支：两种安装方式互不通用
+
+| 要装的东西 | 所在分支 | 安装文档 | 前置条件 |
+|---|---|---|---|
+| Codex++ 用户脚本（单文件，旧方案） | `main` | 本文档下面的「安装」 | 已装 Codex++ 宿主 |
+| 官方 Codex 桌面版独立注入（不需要 Codex++） | `standalone-injector` | 该分支的 `standalone/README.md` | 微软商店版 Codex + Node.js 18+ |
+
+装错分支各有各的失败样子：
+
+- 把本分支的 `tokenlens.js` 放进官方 Codex 桌面版：官方版没有 Codex++ 的用户脚本宿主，文件放哪都不会生效。
+- 在本分支里找 `standalone\install.ps1`：`main` 上没有 `standalone/` 目录，宿主只存在于 `standalone-injector` 分支。
+- 在 `standalone-injector` 分支里照抄本文档那段 Codex++ 命令：那个分支的根目录同样有 `tokenlens.js`，但它是给独立宿主注入用的，不是给 Codex++ 装的。
+
+动手前先看一眼当前分支：
+
+```powershell
+git branch --show-current
+```
+
+输出 `main` 就按本文档装；输出 `standalone-injector` 就按 `standalone/README.md` 装。两个分支互不覆盖，切分支不会破坏已经装好的那一套。
+
+---
+
 在我血亏各种token，是别人的5倍以上用量，各种多余的消耗之后做了这个监控插件，单次输出的量太大的时候，是时候重开会话了
 有好的想法建议可以提，后续打算会增加更为详细的数据，比如有用信息结构权重（不清楚能不能实现），平均速度按当前轮次已结算调用做 token 加权，下一轮次重新计算
 
@@ -59,7 +82,7 @@ TokenLens 只读取 Codex 本地事件与用量通知，不读取或上传会话
 
 速度值大于等于 `10 tok/s` 时显示整数，小于 `10 tok/s` 时保留一位小数。页面热重载会清空当前轮的内存时间线，状态栏会在下一次模型或工具事件到达后恢复。
 
-## 安装
+## 安装（Codex++ 用户脚本，仅限 `main` 分支）
 
 ### Windows
 
@@ -78,6 +101,8 @@ curl -fsSL "https://raw.githubusercontent.com/LingYingNX/TokenLens-for-Codex/mai
 ```
 
 安装后重启 Codex++，或在 Codex++ 的「拓展」页面执行热重载。
+
+> 没有 Codex++、只有官方 Codex 桌面版？这段用不了。切到 `standalone-injector` 分支，按 `standalone/README.md` 里的 `standalone\install.ps1` 安装。
 
 ## 说明
 
