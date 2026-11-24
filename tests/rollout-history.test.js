@@ -119,6 +119,28 @@ test("同一次调用重放只算一次", async () => {
   assert.equal(rows.length, 1);
 });
 
+test("没有 response_id 时，同轮两次同样用量的真实调用算两条", async () => {
+  // 旧去重键是 [turn_id, response_id, total, output]：response_id 缺省为空字符串时，
+  // 同一轮里两次用量恰好相同的调用会被并成一条，历史与 TOP3 少算一次。
+  const root = freshRoot();
+  writeRollout(root, "rollout-g-thread-1.jsonl", [
+    usageRecord("2026-11-23T00:00:00.000Z", "t1", "", 300, 20, 500),
+    usageRecord("2026-11-23T00:00:30.000Z", "t1", "", 300, 20, 500),
+  ]);
+  const rows = await mod.readThreadUsageHistory("thread-1", { sessionsRoot: root });
+  assert.equal(rows.length, 2, "时间戳不同的两次真实调用不能被并成一条");
+});
+
+test("没有 response_id 的重放行仍然只算一次", async () => {
+  const root = freshRoot();
+  writeRollout(root, "rollout-h-thread-1.jsonl", [
+    usageRecord("2026-11-23T00:00:00.000Z", "t1", "", 300, 20, 500),
+    usageRecord("2026-11-23T00:00:00.000Z", "t1", "", 300, 20, 500),
+  ]);
+  const rows = await mod.readThreadUsageHistory("thread-1", { sessionsRoot: root });
+  assert.equal(rows.length, 1, "完全相同的行是重放，必须去重");
+});
+
 test("按时间排序", async () => {
   const root = freshRoot();
   writeRollout(root, "rollout-f-thread-1.jsonl", [

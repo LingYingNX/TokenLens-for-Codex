@@ -26,6 +26,10 @@
     else entry.reject(new Error(String(payload)));
   };
 
+  // 宿主死了（进程被杀、CDP 断了）就再也没有回包，promise 会永久挂着，
+  // 上层的 liveContextPromises 会一直占位，实时上下文再也不刷新。
+  const hostCallTimeoutMs = 15000;
+
   function callHost(route, args) {
     return new Promise((resolve, reject) => {
       const binding = window.__tokenlensHostBinding;
@@ -34,10 +38,18 @@
         return;
       }
       const id = "h" + (nextHostId += 1) + "-" + Date.now();
-      hostCalls.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        hostCalls.delete(id);
+        reject(new Error("standalone: 宿主无响应 " + route));
+      }, hostCallTimeoutMs);
+      hostCalls.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       try {
         binding(JSON.stringify({ id, route, args: args || {} }));
       } catch (error) {
+        clearTimeout(timer);
         hostCalls.delete(id);
         reject(error);
       }

@@ -16,11 +16,11 @@ Codex: the user starts the app and the host waits for the debug port, attaches, 
 |------|----------------|
 | `tokenlens-host.mjs` | Node host: waits for the debug port, attaches, injects over CDP, serves host routes |
 | `tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official app lacks |
-| `tokenlens-host.vbs` | Windowless launcher; `wscript` starts node with window style 0 |
+| `tokenlens-host.vbs` | Windowless launcher; refuses to start a second host (Win32_Process check), then waits for node to exit |
 | `rollout-history.mjs` | Rebuilds thread usage history from rollout files (per-call amounts) |
 | `install.ps1` / `setup-env.ps1` | Install/uninstall the host; set/clear the env vars that open the port |
-| `start-tokenlens.cmd` | Manual host start (delegates to the VBS) |
-| `tools/check.mjs`, `tools/enter-thread.mjs` | Live end-to-end check (8 assertions); enter a thread so the status line renders |
+| `start-tokenlens.cmd` | Manual host start (delegates to the VBS; launches it detached so the console does not outlive the click) |
+| `tools/check.mjs`, `tools/enter-thread.mjs` | Live end-to-end check (8 items; the reload item is skipped without `--reload`, DOM items are skipped while the Codex window is not visible); enter a thread so the status line renders |
 
 ## Setup & environment
 - The debug port comes from `BUILD_FLAVOR=dev` + `CODEX_ELECTRON_CHROMIUM_SWITCHES` (`setup-env.ps1`). The app reads that variable only in the Dev flavor (`if (buildFlavor !== Dev || !a) return []`); values must be strings.
@@ -44,7 +44,7 @@ if (!(await waitPort(9229, 45_000))) stopAll("ChatGPT");   // this is the loop t
 ## Conventions
 - Injection must be idempotent: check `window.__codexPlusThroughputStatusLineRuntime` **and** the style tag. A runtime without its style is a half-injection — patch the style, do not re-run the script (that adds a second listener set).
 - `Runtime.addBinding` and `Page.addScriptToEvaluateOnNewDocument` are per CDP session; re-register on every reattach or the renderer loses the host bridge.
-- Never let the scheduled task run `node.exe` directly — it leaves a console window. Go through `wscript.exe //B tokenlens-host.vbs`, which starts node with window style 0.
+- Never let the scheduled task run `node.exe` directly — it leaves a console window. Go through `wscript.exe //B tokenlens-host.vbs`, which starts node with window style 0 **and waits for it** (`Run(..., 0, True)`). The waiting is what makes `MultipleInstances IgnoreNew` real: a launcher that returns immediately makes every instance look dead, and the one-minute trigger then adds a host per minute (54 hosts / 2.5 GB measured 2026-11-23).
 - Do not go back to command-line switches on the `chatgpt-desktop.exe` alias: AUMID activation (Start menu, taskbar, `codex://`) drops arguments, and mixing both entry points spawns a second instance (10 → 20 processes).
 - `NODE_OPTIONS=--require` cannot patch the Electron main process: `EnableNodeOptionsEnvironmentVariable` is disabled.
 - Do not overwrite `window.electronBridge`: it rejects raw fetches ("HTTP requests must use the HTTP fetch service.").
@@ -55,18 +55,18 @@ if (!(await waitPort(9229, 45_000))) stopAll("ChatGPT");   // this is the loop t
 | Install host | `pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1` |
 | Uninstall host | the same command with `-Uninstall` |
 | Manual start | `standalone\start-tokenlens.cmd` |
-| Live check | `node .\standalone\tools\check.mjs` (needs a running Codex with the debug port) |
+| Live check | `node .\standalone\tools\check.mjs` (needs a running Codex with the debug port; restore the window first — minimized windows report `visibilityState=hidden` and zero geometry, so DOM items SKIP); add `--reload` only when you can interrupt the user's current turn |
 | Enter a thread | `node .\standalone\tools\enter-thread.mjs` (the status line only renders there) |
 
 ## Security
-- The debug port binds to `127.0.0.1` only. Never widen the address: CDP then admits any local same-user process, and `--remote-allow-origins` exists purely so the local page can connect.
+- The debug port binds to `127.0.0.1` only. Never widen the address: CDP then admits any local same-user process. `--remote-allow-origins` allows exactly `http://127.0.0.1`; never set it to `*`, which lets any local web page take the renderer over CDP (the host itself sends no `Origin`, so it does not depend on the list).
 - Rollout JSONL under `~/.codex/sessions` is read-only input (`rollout-history.mjs` only calls `readFile`/`readdir`/`stat`); the host never writes there and never opens the app database.
 - No credentials, tokens or cookies are stored, logged or forwarded; `tokenlens-host.log` holds attach/route events only, and the log is gitignored.
 - The only network traffic is the local CDP connection plus the script's own local Magpie GET; do not add endpoints, telemetry or updaters here.
 
 ## Checklist
 - [ ] `node --check tokenlens.js` green and `node --test tests/*.test.js` green (host contract tests included).
-- [ ] `node .\standalone\tools\check.mjs` 8/8 against a live Codex after any host or adapter edit.
+- [ ] `node .\standalone\tools\check.mjs` all-pass against a live Codex (window visible, page inside a thread) after any host or adapter edit; only add `--reload` when interrupting the current turn is acceptable. A run that only prints SKIP proves nothing.
 - [ ] No new kill/launch path: `tests/standalone-host.test.js` still asserts no-kill and no-self-launch.
 - [ ] `.ps1` files still carry the BOM; `.vbs` stays BOM-less UTF-8 with CRLF.
 

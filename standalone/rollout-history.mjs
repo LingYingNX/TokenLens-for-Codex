@@ -129,7 +129,11 @@ export async function readThreadUsageHistory(threadId, options = {}) {
       const row = parseUsageRecord(entry, contextWindow);
       if (!row) continue;
       // 同一次调用重放时（相同 response_id + 相同用量）只算一次。
-      const key = [row.turn_id, row.response_id, row.usage.total_tokens, row.usage.output_tokens].join("|");
+      // 没有 response_id 时退回用时间戳：重放行的时间戳完全相同，而同一轮里的两次真实调用
+      // 时间戳不同——只按 turn_id + 用量去重会把后者并成一条，历史用量偏低。
+      const key = row.response_id
+        ? [row.turn_id, row.response_id, row.usage.total_tokens, row.usage.output_tokens].join("|")
+        : [row.turn_id, row.observed_at, row.usage.total_tokens, row.usage.output_tokens].join("|");
       if (seen.has(key)) continue;
       seen.add(key);
       rows.push({

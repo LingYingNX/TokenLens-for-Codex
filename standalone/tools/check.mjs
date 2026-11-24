@@ -1,7 +1,8 @@
 // TokenLens 端到端验证：对着正在运行的 Codex 检查状态栏、事件链与用量源。
 //
 // 用法：
-//   node standalone/tools/check.mjs
+//   node standalone/tools/check.mjs            只做非破坏性检查
+//   node standalone/tools/check.mjs --reload   额外刷新页面并切换会话（会打断当前轮次）
 //
 // 退出码 0 = 全绿；非 0 = 有检查项没过。
 //
@@ -23,6 +24,17 @@ const results = [];
 const check = (name, ok, detail) => {
   results.push({ name, ok: !!ok, detail });
 };
+const skip = (name, detail) => {
+  results.push({ name, ok: true, skipped: true, detail });
+};
+
+// 刷新页面会打断用户正在跑的轮次，切侧栏会话还会把用户从当前会话带走，必须显式开启。
+const reload = process.argv.includes("--reload");
+
+// 窗口最小化时 Chromium 把所有几何信息归零（getClientRects/offsetWidth 全是 0），Codex 还会把
+// Composer 从 DOM 上摘掉，依赖渲染的断言只会假失败。先问一次可见性，可见才跑这些检查。
+const pageState = await cdp.evaluate(`(() => ({ visibility: document.visibilityState, focused: document.hasFocus() }))()`);
+const domTrustworthy = pageState?.visibility === "visible";
 
 // 1. 宿主适配层已装载
 const runtime = await cdp.evaluate(`(() => ({
@@ -49,7 +61,7 @@ check("状态栏没有重复实例", dom?.statusLines <= 1, JSON.stringify(dom))
 // 占用率必然从真实值跳到 100%。这个信号稳定，不依赖具体线程的累计量。
 // 合成事件必须用唯一累计值，否则 tokenlens.js 的 appliedTotals 会整条丢弃。
 // 生效后会污染本轮用量，所以第 6 步会刷新页面重置内存状态并断言还原。
-const eventProbe = await cdp.evaluate(`(async () => {
+const eventProbe = !domTrustworthy ? null : await cdp.evaluate(`(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const readContextPercent = async () => {
     const btn = document.querySelector("#codex-plus-throughput-statusline button");
@@ -83,11 +95,15 @@ const eventProbe = await cdp.evaluate(`(async () => {
   const after = await readContextPercent();
   return { before, after };
 })()`);
-check(
-  "官方事件流驱动状态栏",
-  eventProbe?.before !== eventProbe?.after && eventProbe?.after !== null,
-  JSON.stringify(eventProbe),
-);
+if (!domTrustworthy) {
+  skip("官方事件流驱动状态栏", "Codex 窗口不可见（visibilityState=" + pageState?.visibility + "），先恢复窗口再跑");
+} else {
+  check(
+    "官方事件流驱动状态栏",
+    eventProbe?.before !== eventProbe?.after && eventProbe?.after !== null,
+    JSON.stringify(eventProbe),
+  );
+}
 
 // 4. Magpie 用量源可达（经官方 appServices.httpFetch）
 const magpie = await cdp.evaluate(`(async () => {
@@ -125,9 +141,12 @@ const magpie = await cdp.evaluate(`(async () => {
 check("Magpie 用量源可达", magpie?.ok === true, JSON.stringify(magpie));
 
 // 5. 宿主路由能取到线程历史
-const history = await cdp.evaluate(`(async () => {
+// 线程 id 必须从当前页面取：写死的话换一台机器、换一个会话就必挂。
+const currentThreadId = dom?.threadId || null;
+const history = currentThreadId
+  ? await cdp.evaluate(`(async () => {
   try {
-    const result = await window.codexPlus.call("/thread-usage-history", { session_id: "01a1bf10-14a7-7582-a56f-679764297d68" });
+    const result = await window.codexPlus.call("/thread-usage-history", { session_id: ${JSON.stringify(currentThreadId)} });
     const rows = Array.isArray(result?.history) ? result.history : [];
     const totals = rows.map((r) => Number(r?.usage?.total_tokens || 0)).sort((a, b) => b - a);
     return {
@@ -138,27 +157,35 @@ const history = await cdp.evaluate(`(async () => {
   } catch (error) {
     return { error: String(error?.message || error) };
   }
-})()`);
-check("宿主路由返回线程用量历史", (history?.rows ?? 0) > 0, JSON.stringify(history)?.slice(0, 200));
-// 单次调用量必须在合理量级：线程累计量（9000 多万）绝不能出现在这里。
-check(
-  "历史样本是单次调用量而非线程累计量",
-  typeof history?.maxPerCall === "number" && history.maxPerCall > 0 && history.maxPerCall < 5_000_000,
-  "maxPerCall=" + history?.maxPerCall,
-);
+})()`)
+  : null;
+if (!currentThreadId) {
+  skip("宿主路由返回线程用量历史", "当前页面不在线程内（没有线程 id）");
+  skip("历史样本是单次调用量而非线程累计量", "当前页面不在线程内（没有线程 id）");
+} else {
+  check("宿主路由返回线程用量历史", (history?.rows ?? 0) > 0, JSON.stringify(history)?.slice(0, 200));
+  // 单次调用量必须在合理量级：线程累计量（9000 多万）绝不能出现在这里。
+  check(
+    "历史样本是单次调用量而非线程累计量",
+    typeof history?.maxPerCall === "number" && history.maxPerCall > 0 && history.maxPerCall < 5_000_000,
+    "maxPerCall=" + history?.maxPerCall,
+  );
+}
 
 // 6. 刷新页面重置内存状态，清掉第 3 步合成事件的污染
-await cdp.send("Page.enable");
-await cdp.send("Page.reload", { ignoreCache: true });
-await sleep(10000);
-await cdp.evaluate(`(async () => {
-  const item = document.querySelector("[data-app-action-sidebar-thread-id]");
-  if (item) (item.querySelector("button") || item).click();
-  await new Promise((r) => setTimeout(r, 4000));
-  return true;
-})()`);
-// 上下文占用显示在气泡层（形如 91.4%/486.4K），状态栏上的是缓存命中率。
-const restored = await cdp.evaluate(`(async () => {
+if (!reload) {
+  skip("刷新后上下文占用回到真实数值", "未加 --reload（刷新会打断当前轮次）");
+} else if (!domTrustworthy) {
+  skip("刷新后上下文占用回到真实数值", "窗口不可见，刷新后读不到渲染结果");
+} else {
+  await cdp.send("Page.enable");
+  await cdp.send("Page.reload", { ignoreCache: true });
+  await sleep(10000);
+  // 不点侧栏恢复会话：点击会把用户从当前会话带走。刷新后官方 Codex 自己会回到上次的会话，
+  // 只要读回 DOM 线程 id 与刷新前一致，就可以继续比对上下文占用。
+  const reloadedThreadId = await cdp.evaluate(`(() => document.querySelector("[data-above-composer-conversation-id]")?.getAttribute("data-above-composer-conversation-id") || null)()`);
+  // 上下文占用显示在气泡层（形如 91.4%/486.4K），状态栏上的是缓存命中率。
+  const restored = await cdp.evaluate(`(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const btn = document.querySelector("#codex-plus-throughput-statusline button");
   if (btn) {
@@ -170,21 +197,37 @@ const restored = await cdp.evaluate(`(async () => {
   const text = pop?.textContent.replace(/\\s+/g, " ").trim() || "";
   return { text: text.slice(0, 120), contextPercent: text.match(/([\\d.]+)%\\/([\\d.]+[KMB])/)?.[1] ?? "" };
 })()`);
-const expectedPercent = history?.last?.usage?.total_tokens && history?.last?.usage?.contextLimit
-  ? (history.last.usage.total_tokens / history.last.usage.contextLimit * 100).toFixed(1)
-  : "";
-check(
-  "刷新后上下文占用回到真实数值",
-  expectedPercent ? restored?.contextPercent === expectedPercent : true,
-  JSON.stringify({ restored, expectedPercent }),
-);
+  const expectedPercent = reloadedThreadId && reloadedThreadId === currentThreadId
+    && history?.last?.usage?.total_tokens && history?.last?.usage?.contextLimit
+    ? (history.last.usage.total_tokens / history.last.usage.contextLimit * 100).toFixed(1)
+    : "";
+  if (expectedPercent) {
+    check(
+      "刷新后上下文占用回到真实数值",
+      restored?.contextPercent === expectedPercent,
+      JSON.stringify({ restored, expectedPercent, reloadedThreadId }),
+    );
+  } else {
+    // 刷新后没回到同一个线程（或没有历史）时无基准可比，别把它算成通过。
+    skip("刷新后上下文占用回到真实数值", "刷新后线程不一致或无历史基准");
+  }
+}
 
 // 汇总
 let failed = 0;
+let skipped = 0;
 for (const item of results) {
-  if (!item.ok) failed += 1;
-  console.log((item.ok ? "PASS  " : "FAIL  ") + item.name + "  " + (item.detail ?? ""));
+  if (item.skipped) skipped += 1;
+  else if (!item.ok) failed += 1;
+  const tag = item.skipped ? "SKIP  " : item.ok ? "PASS  " : "FAIL  ";
+  console.log(tag + item.name + "  " + (item.detail ?? ""));
 }
 console.log("");
-console.log(failed === 0 ? "全部通过（" + results.length + " 项）" : failed + " 项未通过（" + results.length + " 项）");
+console.log(
+  (failed === 0 ? "全部通过" : failed + " 项未通过")
+  + "（" + results.length + " 项，跳过 " + skipped + " 项）",
+);
+if (!domTrustworthy) {
+  console.log("提示：Codex 窗口当前不可见（visibilityState=" + pageState?.visibility + "），依赖渲染的检查项已跳过；恢复窗口后重跑。");
+}
 process.exit(failed === 0 ? 0 : 1);

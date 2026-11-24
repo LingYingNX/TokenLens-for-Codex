@@ -31,7 +31,7 @@ supplies only the two routes the official app lacks (`codexPlus.call`, `__codexS
 | Test (single) | `node --test tests/analytics.test.js` |
 | Install host (official Codex) | `pwsh -ExecutionPolicy Bypass -File .\standalone\install.ps1` |
 | Uninstall host | the same command with `-Uninstall` |
-| Live check | `node .\standalone\tools\check.mjs` (needs a running Codex with the debug port) |
+| Live check | `node .\standalone\tools\check.mjs` (needs a running, visible Codex with the debug port) |
 | Enter a thread | `node .\standalone\tools\enter-thread.mjs` (the status line only renders there) |
 
 There is no `package.json`, build, lint, format or dependency-install step. Do not invent one.
@@ -44,11 +44,11 @@ There is no `package.json`, build, lint, format or dependency-install step. Do n
 | `artifacts/codex-plus-throughput-statusline.js` | Header-less distribution copy; must equal the body of `tokenlens.js` |
 | `standalone/tokenlens-host.mjs` | Node host: waits for the debug port, attaches, injects over CDP, serves host routes |
 | `standalone/tokenlens-host-adapter.js` | Renderer adapter supplying the host routes the official app lacks |
-| `standalone/tokenlens-host.vbs` | Windowless launcher; `wscript` starts node with window style 0 |
+| `standalone/tokenlens-host.vbs` | Windowless launcher; refuses a second host, then waits for node to exit |
 | `standalone/rollout-history.mjs` | Rebuilds thread usage history from rollout files (per-call amounts) |
 | `standalone/install.ps1` / `setup-env.ps1` | Install/uninstall the host; set/clear the env vars that open the port |
 | `standalone/start-tokenlens.cmd` | Manual host start (delegates to the VBS) |
-| `standalone/tools/check.mjs` | End-to-end check against a live Codex (8 assertions) |
+| `standalone/tools/check.mjs` | End-to-end check against a live Codex (8 items; reload item needs `--reload`) |
 | `tests/helpers.js`, `tests/*.test.js` | Contract and calculation tests; `helpers.js` extracts functions from `tokenlens.js` |
 
 ## File Sync

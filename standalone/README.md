@@ -2,6 +2,8 @@
 
 把 TokenLens 的吞吐状态栏装进**官方 Codex 桌面应用**（微软商店的 MSIX 版）。
 
+> **分支提醒**：本文件只存在于 `standalone-injector` 分支。`main` 分支是 Codex++ 用户脚本版，既没有 `standalone/` 目录，也不适用于官方桌面版——按它装到官方 Codex 上不会有任何效果。安装前先确认 `git branch --show-current` 输出 `standalone-injector`；下载 ZIP 也要先切到这个分支。
+
 装完以后：**用任何方式启动 Codex**（开始菜单、桌面图标、任务栏、`codex://` 链接），
 状态栏都会自动出现在输入框下方，不需要额外操作，也不需要改你的启动习惯。
 
@@ -90,6 +92,8 @@ node .\standalone\tools\check.mjs
 
 全绿退出码 0。**状态栏只在会话页显示**，如果检查时停在首页，先跑
 `node .\standalone\tools\enter-thread.mjs` 让人帮你点进第一个会话。
+
+还有一条：**别把 Codex 窗口最小化之后再跑检查**。最小化时 Chromium 把页面标成 `hidden`、元素几何尺寸全部归零，Codex 还会把输入框从 DOM 上摘掉，此时依赖渲染的检查项会显示 `SKIP` 而不是 `PASS`——`SKIP` 不算验证通过，恢复窗口后重跑。
 
 也可以直接肉眼看：随便打开一个已存在的对话，输入框下方应该有一行 `xx tok/s · yy%`。
 

@@ -34,10 +34,17 @@ test("样式文本对外可见，供宿主在半注入状态下补装", () => {
     /__codexPlusThroughputStatusLineStyleText/,
     "必须把样式文本暴露出去，否则宿主只能重跑整个脚本",
   );
+  // 必须是 getter 而不是快照：脚本在 document-start 执行时 head 还没出现，样式要等
+  // DOMContentLoaded 才装，取值那一刻快照只会拿到空串，宿主的补样式路径随之失效。
   assert.match(
     plugin,
+    /get styleText\(\) \{\s*return globalThis\.__codexPlusThroughputStatusLineStyleText \|\| "";/,
+    "运行时对象必须以 getter 形式提供 styleText",
+  );
+  assert.doesNotMatch(
+    plugin,
     /styleText:\s*globalThis\.__codexPlusThroughputStatusLineStyleText/,
-    "运行时对象必须带上 styleText",
+    "不得在构建运行时那一刻把样式文本快照成常量",
   );
 });
 
@@ -62,4 +69,20 @@ test("半注入时只补样式，不重跑整个脚本", () => {
   const body = host.slice(idx, idx + 2400);
   assert.match(body, /只补样式，不重跑整个脚本/, "必须写清半注入的处理方式");
   assert.match(body, /styleText/, "补样式时要用暴露出来的样式文本");
+});
+
+test("补样式拿不到文本时不许报成功", () => {
+  // 旧实现若 style.textContent 为空就什么都不加，却照样打印「TokenLens 已注入」：
+  // 状态栏退化成裸文本，日志还显示一切正常，排障时完全误导。
+  const host = fs.readFileSync(path.join(repo, "standalone", "tokenlens-host.mjs"), "utf8");
+  const idx = host.indexOf("async function activate(cdp)");
+  const body = host.slice(idx, idx + 2400);
+  assert.match(body, /if \(!style\.textContent\) return 0;/, "空样式必须显式失败");
+  assert.match(body, /样式文本缺失，已重新注入 TokenLens/, "空样式必须回落到完整重注入");
+});
+
+test("补样式用的版本号来自运行时，不再硬编码", () => {
+  const host = fs.readFileSync(path.join(repo, "standalone", "tokenlens-host.mjs"), "utf8");
+  assert.doesNotMatch(host, /dataset\.version = "43"/, "版本号必须来自运行时，否则 @version 一升就漂移");
+  assert.match(host, /dataset\.version = String\(runtime\?\.version/, "版本号取自运行时对象");
 });

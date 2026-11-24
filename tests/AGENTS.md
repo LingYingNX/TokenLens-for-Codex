@@ -9,14 +9,14 @@
 ## Overview
 Tests pin the contracts of `tokenlens.js` (rendering, events, history, analytics, theme) and of the standalone host,
 without a browser: `helpers.js` extracts named functions from the single source file by text, and each `*.test.js`
-exercises them under `node:test`. 147 tests, ~3 s.
+exercises them under `node:test`. 156 tests, ~3 s.
 
 ## Key Files
 | Path | Responsibility |
 |------|----------------|
 | `helpers.js` | Extracts named functions from `tokenlens.js`; the only seam between source and tests |
 | `artifact-sync.test.js` | Pins `artifacts/codex-plus-throughput-statusline.js` to the body of `tokenlens.js` |
-| `standalone-host.test.js` | Host contract: no-kill, no-self-launch, idempotent injection, per-session binding, windowless VBS, env-var names, UTF-8 BOM |
+| `standalone-host.test.js` | Host contract: no-kill, no-self-launch, idempotent injection, single-instance VBS, per-session binding, host-call timeout, uninstall restores env values, UTF-8 BOM |
 | `rollout-history.test.js` | Per-call usage reconstruction from rollout JSONL (fresh `mkdtempSync` per test) |
 | `style-install.test.js`, `placement-grace.test.js` | Style survives a `loading` document; no flash on thread switches |
 | `analytics`, `usage-sources`, `chart-scale`, `calendar`, `tool-categories`, … | Calculation and seam coverage |
@@ -40,8 +40,8 @@ exercises them under `node:test`. 147 tests, ~3 s.
 - Chart changes preserve scale thresholds, chronological order, the latest-200 window and full-sample TOP ranking; the y-axis follows the newest 20 calls (`codexPlusUsageChartAxisWindow`).
 - Range-calendar changes cover the month grid (Beijing boundaries, leading blanks, leap month), month shifting, click-range extension and the disabled `day has no usage` state.
 - Source-seam changes cover first-available-source-wins, no request to later sources, per-source errors, and one broken source not breaking the others.
-- `placement-grace.test.js` pins the no-flash behaviour on thread switches.
-- No DOM automation; DOM-level truth comes from `node standalone/tools/check.mjs` against a live Codex.
+- `placement-grace.test.js` pins the no-flash behaviour on thread switches: the grace timer, no re-render during grace, earliest-wins scheduling, and that `dispose()` clears it. Anchor text assertions to the target function body (`source.indexOf("    dispose() {")`), never to a line that also appears elsewhere — a sliced `indexOf` once matched the popover handler and made the assertion vacuous.
+- No DOM automation; DOM-level truth comes from `node standalone/tools/check.mjs` against a live Codex (the destructive reload item only runs with `--reload`; DOM items SKIP while the Codex window is minimized, because Chromium then reports zero geometry and Codex unmounts the composer).
 
 ## Security
 - Never point a test at the real session store, a real port or the real Magpie endpoint: fixtures are synthetic and local.

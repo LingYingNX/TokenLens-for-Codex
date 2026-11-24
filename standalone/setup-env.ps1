@@ -32,13 +32,30 @@ $statePath = Join-Path $PSScriptRoot "env-state.json"
 $switches = @{
   "remote-debugging-address" = "127.0.0.1"
   "remote-debugging-port"    = "9229"
-  "remote-allow-origins"     = "*"
+  # 宿主用 Node 内置 WebSocket，握手不带 Origin（Chromium 只在有 Origin 时才校验白名单），
+  # 所以这里放行的是本机页面 Origin；写成 "*" 等于让任意网页都能连 ws://127.0.0.1:9229 接管渲染进程。
+  "remote-allow-origins"     = "http://127.0.0.1"
 } | ConvertTo-Json -Compress
 
 if ($Uninstall) {
-  [Environment]::SetEnvironmentVariable($flavorName, $null, "User")
-  [Environment]::SetEnvironmentVariable($switchName, $null, "User")
-  Write-Host "已撤销：BUILD_FLAVOR 与 CODEX_ELECTRON_CHROMIUM_SWITCHES 已清空。"
+  # 安装时把原值存进了 env-state.json，卸载必须按它还原，否则用户自己配过的值永久丢失。
+  $restored = $false
+  if (Test-Path -LiteralPath $statePath) {
+    try {
+      $previous = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+      [Environment]::SetEnvironmentVariable($flavorName, $previous.BUILD_FLAVOR, "User")
+      [Environment]::SetEnvironmentVariable($switchName, $previous.CODEX_ELECTRON_CHROMIUM_SWITCHES, "User")
+      $restored = $true
+    } catch {
+      Write-Host "env-state.json 读取失败，按清空处理：" $_.Exception.Message
+    }
+    Remove-Item -LiteralPath $statePath -Force
+  }
+  if (-not $restored) {
+    [Environment]::SetEnvironmentVariable($flavorName, $null, "User")
+    [Environment]::SetEnvironmentVariable($switchName, $null, "User")
+  }
+  Write-Host "已撤销：BUILD_FLAVOR 与 CODEX_ELECTRON_CHROMIUM_SWITCHES 已还原为安装前的值。"
   Write-Host "重启 Codex 后恢复默认行为（无调试端口，TokenLens 不注入）。"
   return
 }

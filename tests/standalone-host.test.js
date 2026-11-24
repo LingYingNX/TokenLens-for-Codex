@@ -41,8 +41,28 @@ test("调试端口由环境变量的 JSON 开关提供", () => {
   const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
   assert.match(setup, /"remote-debugging-address"\s*=\s*"127\.0\.0\.1"/);
   assert.match(setup, /"remote-debugging-port"\s*=\s*"9229"/);
-  assert.match(setup, /"remote-allow-origins"\s*=\s*"\*"/);
+  // 早先写的是 "*"：任意本地网页都能连上 ws://127.0.0.1:9229 接管渲染进程。
+  assert.match(setup, /"remote-allow-origins"\s*=\s*"http:\/\/127\.0\.0\.1"/, "白名单不得放成 *");
+  assert.doesNotMatch(setup, /"remote-allow-origins"\s*=\s*"\*"/, "禁止把调试端口放开给任意 origin");
   assert.match(setup, /ConvertTo-Json -Compress/, "必须序列化成 JSON");
+});
+
+test("卸载会停掉已运行的宿主，并还原用户原有环境变量", () => {
+  const install = readFileSync(path.join(repo, "standalone", "install.ps1"), "utf8");
+  // 卸载后宿主还在后台跑是最糟的状态：脚本已经删了，注入的运行时仍活着，用户找不到来源。
+  assert.match(install, /tokenlens-host\.mjs/, "卸载时必须按命令行定位宿主进程");
+  assert.match(install, /Stop-Process/, "卸载时必须停掉宿主");
+
+  const setup = readFileSync(path.join(repo, "standalone", "setup-env.ps1"), "utf8");
+  const uninstallIndex = setup.indexOf('if ($Uninstall)');
+  assert.ok(uninstallIndex > 0, "必须保留 -Uninstall 分支");
+  const uninstallBlock = setup.slice(uninstallIndex, uninstallIndex + 1200);
+  // 旧实现直接置 null：用户装的别的 Dev 版工具变量、自建的调试开关全被抹掉，且不可恢复。
+  assert.match(setup, /env-state\.json/, "备份文件名固定");
+  assert.match(uninstallBlock, /Test-Path -LiteralPath \$statePath/, "卸载必须读回备份");
+  assert.match(uninstallBlock, /ConvertFrom-Json/, "必须解析备份里的原值");
+  assert.match(uninstallBlock, /SetEnvironmentVariable/, "必须把原值写回去");
+  assert.match(uninstallBlock, /Remove-Item/, "还原后必须删掉状态文件，以便下次重新记录");
 });
 
 test("安装器还原桌面快捷方式，不再依赖启动参数", () => {
@@ -57,12 +77,15 @@ test("宿主不会因为 Codex 未启动而退出", () => {
   // 宿主先于 Codex 启动是常态（开机自启）。它必须一直等，不能误判后退出。
   assert.doesNotMatch(host, /Codex 已在运行但没有调试端口。.*\n.*process\.exitCode/s, "不得因检测到 Codex 在跑就退出");
   assert.match(host, /宿主继续等待/, "检测到 Codex 在跑但没端口时应继续等待");
-  assert.doesNotMatch(host, /host error:/, "不得再有旧版的无限重试错误分支");
+  // 查不到安装位置只能影响一行日志，不能连调试端口正常时都不附着。
+  assert.match(host, /无法定位 Codex 安装位置（继续）/, "Get-AppxPackage 失败必须降级继续");
 });
 
 test("宿主检测 Codex 是否在运行但绝不干预它", () => {
   assert.match(host, /async function codexRunning\(\)/);
-  assert.match(host, /async function codexHasDebugPort\(\)/, "必须能判断端口是否已开");
+  // 端口探测靠直接连 9229：旧实现每次 tick 都跑一次 PowerShell 查询，慢且会拖住附着。
+  assert.match(host, /port/, "必须用端口探测判断调试通道是否已开");
+  assert.doesNotMatch(host, /codexHasDebugPort/, "不得再留只被测试引用的死函数");
 });
 
 test("宿主支持 CDP 断线后重新附着", () => {
@@ -71,7 +94,7 @@ test("宿主支持 CDP 断线后重新附着", () => {
 });
 
 test("宿主注入是幂等的", () => {
-  // tokenlens.js 没有自带幂等守卫，重复 evaluate 会渲染双份状态栏。
+  // tokenlens.js 重跑时会先 dispose 旧运行时，但无谓重跑仍会重建整棵 DOM，宿主先查再注入。
   assert.match(host, /__codexPlusThroughputStatusLineRuntime/, "重复注入前必须先检查运行时是否已存在");
   assert.match(host, /async function register\(cdp, session\)/);
   assert.match(host, /async function activate\(cdp\)/);
@@ -98,6 +121,14 @@ test("适配层提供 tokenlens.js 依赖的宿主路由", () => {
   assert.match(adapter, /\/settings\/get/, "必须实现 /settings/get");
   assert.match(adapter, /\/thread-usage-history/, "必须实现 /thread-usage-history");
   assert.match(adapter, /\/thread-usage-live/, "必须实现 /thread-usage-live");
+});
+
+test("适配层调宿主的请求有超时", () => {
+  // 宿主进程被杀或 CDP 断开后再也不会回包，没有超时的话 promise 永挂：
+  // liveContextPromises 一直占位，实时上下文从此不再刷新。
+  assert.match(adapter, /const hostCallTimeoutMs = \d+;/, "必须有宿主调用超时");
+  assert.match(adapter, /standalone: 宿主无响应/, "超时必须给出可读错误");
+  assert.match(adapter, /clearTimeout\(timer\)/, "结算后必须清定时器");
 });
 
 test("适配层不替换官方 electronBridge", () => {
@@ -140,7 +171,7 @@ test("环境变量脚本用 dev flavor 开端口，任意入口都生效", () =>
   assert.match(setup, /SetEnvironmentVariable\(\$switchName, \$switches, "User"\)/, "必须写 CODEX_ELECTRON_CHROMIUM_SWITCHES");
   assert.match(setup, /remote-debugging-address/, "必须设调试地址");
   assert.match(setup, /remote-debugging-port/, "必须设调试端口");
-  assert.match(setup, /remote-allow-origins/, "必须放开 CDP origins");
+  assert.match(setup, /remote-allow-origins/, "必须设 CDP origins 白名单，精确放行 http://127.0.0.1");
   assert.match(setup, /-Uninstall/, "必须能撤销环境变量");
 });
 
@@ -202,8 +233,19 @@ test("计划任务用 wscript 拉起 VBS，不直接跑 node", () => {
   assert.doesNotMatch(install, /New-ScheduledTaskAction -Execute \$node/, "不得让计划任务直接跑 node.exe");
 });
 
-test("VBS 用隐藏窗口启动 node", () => {
+test("VBS 用隐藏窗口启动 node，并等到宿主动作结束", () => {
+  // 曾经是 Run(..., 0, False)：wscript 拉起 node 后立刻退出，计划任务实例活不过一秒，
+  // MultipleInstances=IgnoreNew 看不到活实例，于是每分钟多一个宿主（实测 54 个 / 2.5 GB）。
   const vbs = readFileSync(path.join(repo, "standalone", "tokenlens-host.vbs"), "utf8");
-  assert.match(vbs, /shell\.Run .*,\s*0,\s*False/, "窗口样式必须是 0（隐藏）且不等待");
+  assert.match(vbs, /shell\.Run\(command, 0, True\)/, "窗口样式必须是 0（隐藏）且等待宿主退出");
+  assert.match(vbs, /nodeExe & """ """/, "命令行必须是 \"node\" \"host\" 两段，少一个引号 VBS 会编译失败");
   assert.match(vbs, /tokenlens-host\.mjs/, "必须启动宿主脚本");
+});
+
+test("VBS 自己守单实例，覆盖手动启动与计划任务两条入口", () => {
+  const vbs = readFileSync(path.join(repo, "standalone", "tokenlens-host.vbs"), "utf8");
+  assert.match(vbs, /Win32_Process/, "必须用 Win32_Process 查已运行的宿主");
+  assert.match(vbs, /CommandLine/, "必须按命令行匹配，避免误杀别的 node 进程");
+  assert.match(vbs, /tokenlens-host\.mjs/);
+  assert.match(vbs, /WScript\.Quit/, "已有实例时必须直接退出");
 });

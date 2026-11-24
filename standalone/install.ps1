@@ -24,6 +24,11 @@ $shell = Get-PreferredShell
 
 if ($Uninstall) {
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+  # 计划任务只管拉起，不管收尸；已经常驻的宿主会活到注销，必须自己清掉。
+  # 只按命令行匹配本仓库的宿主脚本，绝不碰 Codex。
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*tokenlens-host.mjs*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   # 桌面快捷方式若被改过就还原成官方原样。
   if (Test-Path -LiteralPath $shortcutBackup) {
     Copy-Item -LiteralPath $shortcutBackup -Destination $shortcutPath -Force
@@ -51,8 +56,10 @@ if (Test-Path -LiteralPath $shortcutBackup) {
 
 # 2. 后台宿主：常驻等待 Codex。
 #    只用 AtLogOnce 的话有两个问题：宿主崩一次就再也不起来；不重新登录就不会跑。
-#    所以加两个触发器：登录时跑一次（延迟 30 秒），之后每分钟拉一次。
-#    宿主本身常驻，重复触发是幂等的；MultipleInstances=IgnoreNew 保证不会起多个。
+#    所以加两个触发器：登录时跑一次（延迟 30 秒），之后每分钟当看门狗拉一次。
+#    重复触发不是幂等的：wscript 拉起后立刻返回，任务实例活不过 1 秒，
+#    MultipleInstances=IgnoreNew 看不到活实例，结果就是每分钟多一个常驻 node。
+#    单实例由 tokenlens-host.vbs 自己查 Win32_Process 挡住（并且改为等待宿主退出）。
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) { throw "node.exe not found (Node.js missing or not in PATH)" }
 

@@ -122,6 +122,7 @@
     unsubscribers: [],
     hideTimer: 0,
     placementGraceTimer: 0,
+    timerDueAt: 0,
     toolExpanded: false,
     tokenExpanded: false,
     theme: codexPlusUsageReadTheme(),
@@ -2997,7 +2998,6 @@
     parts.customEnd.addEventListener("change", updateCustomRange);
     popover.addEventListener("pointerenter", () => {
       clearTimeout(codexPlusUsageState.hideTimer);
-      codexPlusUsageClearPlacementGrace();
       codexPlusUsageState.hideTimer = 0;
     });
     popover.addEventListener("pointerleave", () => codexPlusUsageHidePopoverSoon());
@@ -3579,31 +3579,30 @@
     codexPlusUsageState.placementGraceTimer = 0;
   }
 
-
   function codexPlusUsageSyncPlacement() {
     // 宿主重注入会覆盖 sync 全局，这里补挂一次，保证开关仍然能通知到本脚本。
     codexPlusInstallUsageStatusLineSync();
     const card = codexPlusUsageEnabled() ? codexPlusUsageComposerCard() : null;
     const threadId = codexPlusUsageThreadId(card);
     if (!card || !threadId) {
-      if (!codexPlusUsageState.node?.isConnected) {
+      if (!codexPlusUsageState.node?.isConnected || codexPlusUsageState.node.dataset.hidden === "true") {
         codexPlusUsageClearPlacementGrace();
         codexPlusUsageHide();
         codexPlusUsageState.threadId = "";
         return null;
       }
       // 切换会话时 Composer 会被整体拆掉重建，这一瞬间 card 或 threadId 会短暂为空。
-      // 立刻隐藏会让状态栏闪一下再出现，所以给一段宽限期：期间保持原样，并且用短间隔
-      // 重新同步，等新会话挂上来就能立刻显示。首页没有当前会话，宽限期结束后依然会隐藏。
+      // 立刻隐藏会让状态栏闪一下再出现，所以给一段宽限期：期间保持原样、不重绘（重绘只会把
+      // 速度画成 "--"），到期再隐藏。首页没有当前会话，到期后同样隐藏。
       if (!codexPlusUsageState.placementGraceTimer) {
         codexPlusUsageState.placementGraceTimer = window.setTimeout(() => {
           codexPlusUsageState.placementGraceTimer = 0;
           if (!codexPlusUsageState.node?.isConnected) return;
           codexPlusUsageHide();
           codexPlusUsageState.threadId = "";
+          codexPlusUsageSchedule(codexPlusUsageIdleTickMs);
         }, codexPlusUsagePlacementGraceMs);
       }
-      codexPlusUsageSchedule(codexPlusUsagePlacementProbeMs);
       return null;
     }
     codexPlusUsageClearPlacementGrace();
@@ -3664,8 +3663,16 @@
 
   function codexPlusUsageSchedule(delay) {
     if (codexPlusUsageState.disposed) return;
+    const wait = Math.max(0, Number(delay) || 0);
+    // 最早者胜：后到的长排期不能把已经排好的短探活顶掉（宽限期的 200ms 快探曾因此失效）。
+    if (codexPlusUsageState.timer && codexPlusUsageState.timerDueAt <= Date.now() + wait) return;
     clearTimeout(codexPlusUsageState.timer);
-    codexPlusUsageState.timer = window.setTimeout(codexPlusUsageTick, delay);
+    codexPlusUsageState.timerDueAt = Date.now() + wait;
+    codexPlusUsageState.timer = window.setTimeout(() => {
+      codexPlusUsageState.timer = 0;
+      codexPlusUsageState.timerDueAt = 0;
+      codexPlusUsageTick();
+    }, wait);
   }
 
   function codexPlusUsageTick() {
@@ -3677,6 +3684,11 @@
     }
     codexPlusUsageEnsureSubscriptions();
     const placement = codexPlusUsageSyncPlacement();
+    if (!placement && codexPlusUsageState.placementGraceTimer) {
+      // 宽限期内保持上一轮的 DOM 不动，只加快探测；现在重绘只会把速度画成 "--" 再消失。
+      codexPlusUsageSchedule(codexPlusUsagePlacementProbeMs);
+      return;
+    }
     const turn = placement ? codexPlusUsageState.turns.get(placement.threadId) : null;
     codexPlusUsageRender(codexPlusUsageTurnSnapshot(turn, Date.now()));
     if (placement) {
@@ -3730,14 +3742,20 @@
   codexPlusUsageSchedule(300);
   window.__codexPlusThroughputStatusLineRuntime = {
     version: codexPlusUsageVersion,
-    styleText: globalThis.__codexPlusThroughputStatusLineStyleText || "",
+    // 必须现取：走 Page.addScriptToEvaluateOnNewDocument 注入时 document.head 还没出来，
+    // 样式会推迟到 DOMContentLoaded 再装，构建 runtime 那一刻全局还是空的。
+    get styleText() {
+      return globalThis.__codexPlusThroughputStatusLineStyleText || "";
+    },
     sync: () => codexPlusUsageSchedule(0),
     dispose() {
       codexPlusUsageState.disposed = true;
       clearTimeout(codexPlusUsageState.timer);
       clearTimeout(codexPlusUsageState.hideTimer);
       clearTimeout(codexPlusUsageState.historyRetryTimer);
+      codexPlusUsageClearPlacementGrace();
       codexPlusUsageState.timer = 0;
+      codexPlusUsageState.timerDueAt = 0;
       codexPlusUsageState.hideTimer = 0;
       codexPlusUsageState.historyRetryTimer = 0;
       codexPlusUsageState.observer?.disconnect();

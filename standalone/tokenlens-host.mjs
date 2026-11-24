@@ -5,10 +5,9 @@
 //      那就是「启动几秒后 Codex 闪退」的真正原因。
 //   2. 绝不自己启动 Codex。用户双击桌面图标启动，端口由启动参数打开。
 //   3. 注入必须幂等。tokenlens.js 没有自带守卫，重复 evaluate 会渲染双份状态栏。
-import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readThreadUsageHistory } from "./rollout-history.mjs";
@@ -26,155 +25,82 @@ function log(message) {
   const line = "[" + new Date().toISOString() + "] " + message;
   console.log(line);
   try {
-    require_appendFile(logPath, line + "\n");
+    appendFileSync(logPath, line + "\n", "utf8");
   } catch {
     // 日志写不进去也不能影响注入。
   }
 }
 
-function require_appendFile(target, text) {
-  // 用同步追加，避免为了写日志引入流。
-  const fs = globalThis.__tokenlensFsSync;
-  if (fs) { fs.appendFileSync(target, text, "utf8"); return; }
-}
-
-// Node ESM 里拿同步 fs 需要单独 import，这里直接用 createRequire。
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-globalThis.__tokenlensFsSync = require("node:fs");
-require_appendFile(logPath, "");
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- WebSocket
 
-function frame(payload) {
-  const body = Buffer.from(JSON.stringify(payload));
-  const mask = randomBytes(4);
-  let header;
-  if (body.length < 126) header = Buffer.from([0x81, 0x80 | body.length]);
-  else if (body.length < 0x10000) {
-    header = Buffer.alloc(4);
-    header[0] = 0x81; header[1] = 0xfe;
-    header.writeUInt16BE(body.length, 2);
-  } else {
-    header = Buffer.alloc(10);
-    header[0] = 0x81; header[1] = 0xff;
-    header.writeBigUInt64BE(BigInt(body.length), 2);
-  }
-  for (let i = 0; i < body.length; i += 1) body[i] ^= mask[i % 4];
-  return Buffer.concat([header, mask, body]);
-}
-
+// Chromium 的 DevTools 端口就是标准 WebSocket，Node 自带实现即可。
+// 手写帧编解码那份会忽略分片、ping/pong 和 close，send 的超时定时器也从不清理。
 class Cdp {
   constructor(socket) {
     this.socket = socket;
     this.id = 0;
     this.pending = new Map();
     this.listeners = new Set();
-    this.buffer = Buffer.alloc(0);
-    this.upgraded = false;
     this.closed = false;
   }
 
   static connect(url) {
-    const parsed = new URL(url);
-    const key = randomBytes(16).toString("base64");
-    const expected = createHash("sha1")
-      .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-      .digest("base64");
-    const socket = net.createConnection({ host: parsed.hostname, port: Number(parsed.port) });
-    const cdp = new Cdp(socket);
     return new Promise((resolve, reject) => {
+      let socket;
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      const cdp = new Cdp(socket);
       const timer = setTimeout(() => {
-        socket.destroy();
+        try { socket.close(); } catch { /* 已断开 */ }
         reject(new Error("本机 Codex 调试连接超时"));
       }, 8000);
-      socket.on("connect", () => {
-        socket.write([
-          "GET " + parsed.pathname + parsed.search + " HTTP/1.1",
-          "Host: " + parsed.host,
-          "Upgrade: websocket",
-          "Connection: Upgrade",
-          "Origin: http://127.0.0.1",
-          "Sec-WebSocket-Key: " + key,
-          "Sec-WebSocket-Version: 13",
-          "", "",
-        ].join("\r\n"));
-      });
-      socket.on("data", (data) => {
-        cdp.buffer = Buffer.concat([cdp.buffer, data]);
-        if (!cdp.upgraded) {
-          const boundary = cdp.buffer.indexOf("\r\n\r\n");
-          if (boundary < 0) return;
-          const headers = cdp.buffer.subarray(0, boundary).toString();
-          cdp.buffer = cdp.buffer.subarray(boundary + 4);
-          if (!headers.startsWith("HTTP/1.1 101")) {
-            clearTimeout(timer);
-            socket.destroy();
-            reject(new Error("Codex 拒绝了本机调试连接"));
-            return;
-          }
-          if (!headers.toLowerCase().includes("sec-websocket-accept: " + expected.toLowerCase())) {
-            clearTimeout(timer);
-            socket.destroy();
-            reject(new Error("Codex 调试连接的握手校验失败"));
-            return;
-          }
-          cdp.upgraded = true;
-          clearTimeout(timer);
-          resolve(cdp);
-        }
-        cdp.consume();
-      });
-      socket.on("error", (error) => {
+      socket.addEventListener("open", () => {
         clearTimeout(timer);
-        reject(error);
-      });
-      socket.on("close", () => {
-        cdp.closed = true;
-        for (const { reject: rejectPending } of cdp.pending.values()) {
-          rejectPending(new Error("CDP 连接已关闭"));
-        }
-        cdp.pending.clear();
-      });
+        resolve(cdp);
+      }, { once: true });
+      socket.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error("Codex 拒绝了本机调试连接"));
+      }, { once: true });
+      socket.addEventListener("message", (event) => cdp.consume(event.data));
+      socket.addEventListener("close", () => cdp.handleClose());
     });
   }
 
-  consume() {
-    while (this.upgraded && this.buffer.length >= 2) {
-      let length = this.buffer[1] & 0x7f;
-      let offset = 2;
-      if (length === 126) {
-        if (this.buffer.length < 4) return;
-        length = this.buffer.readUInt16BE(2);
-        offset = 4;
-      } else if (length === 127) {
-        if (this.buffer.length < 10) return;
-        length = Number(this.buffer.readBigUInt64BE(2));
-        offset = 10;
-      }
-      if (this.buffer.length < offset + length) return;
-      const opcode = this.buffer[0] & 0x0f;
-      const message = this.buffer.subarray(offset, offset + length);
-      this.buffer = this.buffer.subarray(offset + length);
-      if (opcode !== 1) continue;
-      let payload;
-      try {
-        payload = JSON.parse(message.toString());
-      } catch {
-        continue;
-      }
-      if (payload.id && this.pending.has(payload.id)) {
-        const { resolve, reject } = this.pending.get(payload.id);
-        this.pending.delete(payload.id);
-        if (payload.error) reject(new Error(payload.error.message));
-        else resolve(payload.result);
-        continue;
-      }
-      for (const listener of this.listeners) {
-        try { listener(payload); } catch { /* 单个监听器出错不影响其他 */ }
-      }
+  handleClose() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(new Error("CDP 连接已关闭"));
+    }
+    this.pending.clear();
+  }
+
+  consume(data) {
+    if (this.closed) return;
+    let payload;
+    try {
+      payload = JSON.parse(typeof data === "string" ? data : Buffer.from(data).toString("utf8"));
+    } catch {
+      return;
+    }
+    if (payload.id && this.pending.has(payload.id)) {
+      const { resolve, reject, timer } = this.pending.get(payload.id);
+      clearTimeout(timer);
+      this.pending.delete(payload.id);
+      if (payload.error) reject(new Error(payload.error.message));
+      else resolve(payload.result);
+      return;
+    }
+    for (const listener of this.listeners) {
+      try { listener(payload); } catch { /* 单个监听器出错不影响其他 */ }
     }
   }
 
@@ -187,13 +113,23 @@ class Cdp {
     this.id += 1;
     const id = this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.write(frame({ id, method, params }));
-      setTimeout(() => {
+      if (this.closed) {
+        reject(new Error("CDP 连接已关闭"));
+        return;
+      }
+      const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
         reject(new Error("CDP 超时: " + method));
       }, 20000);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.socket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -210,8 +146,8 @@ class Cdp {
   }
 
   close() {
-    this.closed = true;
-    try { this.socket.destroy(); } catch { /* 已断开 */ }
+    this.handleClose();
+    try { this.socket.close(); } catch { /* 已断开 */ }
   }
 }
 
@@ -260,18 +196,6 @@ async function getPackage() {
   };
 }
 
-// 检查 Codex 是否带着调试端口在跑。
-// 正常启动由用户自己点桌面图标，端口靠快捷方式里的启动参数打开；
-// 宿主不主动启动 Codex，也绝不杀 Codex。
-async function codexHasDebugPort() {
-  try {
-    const res = await fetch("http://127.0.0.1:" + port + "/json/version", { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function codexRunning() {
   return new Promise((resolve) => {
     execFile(
@@ -314,26 +238,40 @@ async function activate(cdp) {
   if (state?.runtime === true && state?.style === true) return false;
   if (state?.runtime === true) {
     // 半注入：只补样式，不重跑整个脚本（否则会挂第二套监听器）。
-    await cdp.evaluate(`(() => {
+    const written = await cdp.evaluate(`(() => {
+      const runtime = window.__codexPlusThroughputStatusLineRuntime;
       const style = document.createElement("style");
       style.id = "codex-plus-throughput-statusline-style";
-      style.dataset.version = "43";
+      style.dataset.version = String(runtime?.version || "");
       style.dataset.codexPlusExt = "user-throughput-statusline";
-      style.textContent = window.__codexPlusThroughputStatusLineRuntime?.styleText || "";
-      if (style.textContent) document.head.appendChild(style);
+      style.textContent = runtime?.styleText || "";
+      if (!style.textContent) return 0;
+      (document.head || document.documentElement).appendChild(style);
       return style.textContent.length;
     })()`);
-  } else {
-    await cdp.evaluate(adapter + "\n" + plugin);
+    if (!Number(written)) {
+      // 拿不到样式文本时补样式只会补个空壳。runtime 里已有 dispose 守卫，重跑整份脚本是安全的。
+      await cdp.evaluate(adapter + "\n" + plugin);
+      log("样式文本缺失，已重新注入 TokenLens");
+      return true;
+    }
+    log("TokenLens 已补样式");
+    return true;
   }
+  await cdp.evaluate(adapter + "\n" + plugin);
   log("TokenLens 已注入");
   return true;
 }
 
 async function main() {
   log("TokenLens 宿主启动（端口 " + port + "）");
-  const packageInfo = await getPackage();
-  log("Codex 安装位置: " + packageInfo.installLocation);
+  // 安装位置只用于打一行日志。拿不到就跳过，不能因此不附着。
+  try {
+    const packageInfo = await getPackage();
+    log("Codex 安装位置: " + packageInfo.installLocation);
+  } catch (error) {
+    log("无法定位 Codex 安装位置（继续）: " + (error?.message || error));
+  }
 
   // 等带调试端口的 Codex 出现。用户正常点图标启动即可，端口由环境变量打开。
   // 这里不能因为「Codex 在跑但没端口」就退出——用户可能是先开了 Codex 才装的插件，
@@ -396,7 +334,7 @@ async function runSession(cdp) {
   cdp.on((message) => {
     if (message?.method !== "Runtime.bindingCalled") return;
     if (message.params?.name !== "__tokenlensHostBinding") return;
-    void handleHostCall(cdp, message.params.payload);
+    void handleHostCall(cdp, message.params.payload).catch(() => {});
   });
 
   await register(cdp, session);
@@ -453,7 +391,9 @@ async function handleHostCall(cdp, rawPayload) {
     }
     await cdp.evaluate("window.__tokenlensHostResult(" + JSON.stringify(id) + ", true, " + JSON.stringify(payload) + ");");
   } catch (error) {
-    await cdp.evaluate("window.__tokenlensHostResult(" + JSON.stringify(id) + ", false, " + JSON.stringify(String(error?.message || error)) + ");");
+    if (cdp.closed) return;
+    // 连接已经断了就没法回结果，这里的拒绝不能再抛出去（Node 会当成未捕获拒绝直接退出）。
+    await cdp.evaluate("window.__tokenlensHostResult(" + JSON.stringify(id) + ", false, " + JSON.stringify(String(error?.message || error)) + ");").catch(() => {});
   }
 }
 
