@@ -1,6 +1,6 @@
 <!-- FOR AI AGENTS - Human readability is a side effect, not a goal -->
 <!-- Managed by agent: keep sections and order; edit content, not structure -->
-<!-- Last updated: 2026-11-23 | Last verified: 2026-11-23 -->
+<!-- Last updated: 2026-11-24 | Last verified: 2026-11-24 -->
 
 # AGENTS.md
 
@@ -79,6 +79,7 @@ After editing it:
 - Placement uses a grace period (`codexPlusUsagePlacementGraceMs`): switching threads rebuilds the composer, so hiding on the first missing `card`/`threadId` makes the status line flash; stay visible and re-probe fast (`codexPlusUsagePlacementProbeMs`).
 - The status line renders only on thread pages; hiding it on the home page is intended (2026-11-23). Do not "fix" it by showing the last thread's usage.
 - Mark known limits with `shortcut: <limit>, <when to upgrade>`.
+- `CLAUDE.md` at the root, `standalone/` and `tests/` are symlinks (git mode 120000) to the `AGENTS.md` in the same directory, not duplicate files: deleting one hides the rules from Claude Code in that scope. `validate-structure.sh` fails without them.
 
 ## Boundaries
 
