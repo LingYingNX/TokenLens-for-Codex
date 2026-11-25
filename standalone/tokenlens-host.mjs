@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readThreadUsageHistory } from "./rollout-history.mjs";
+import { readRolloutUsageAttribution } from "./rollout-history.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.dirname(here);
@@ -359,6 +360,18 @@ async function runSession(cdp) {
   });
 }
 
+let attributionScanRunning = false;
+
+async function readLimitedAttribution(sessionId) {
+  if (attributionScanRunning) throw new Error("standalone: 归属扫描繁忙，请稍后重试");
+  attributionScanRunning = true;
+  try {
+    return await readRolloutUsageAttribution(sessionId);
+  } finally {
+    attributionScanRunning = false;
+  }
+}
+
 async function handleHostCall(cdp, rawPayload) {
   let request;
   try {
@@ -370,7 +383,13 @@ async function handleHostCall(cdp, rawPayload) {
   try {
     let payload;
     if (route === "/thread-usage-history") {
-      payload = { history: await readThreadUsageHistory(String(args?.session_id || "")) };
+      const sessionId = String(args?.session_id || "");
+      if (args?.attribution_only) {
+        payload = { attribution: await readLimitedAttribution(sessionId) };
+      } else {
+        payload = { history: await readThreadUsageHistory(sessionId) };
+        if (args?.include_attribution) payload.attribution = await readLimitedAttribution(sessionId);
+      }
     } else if (route === "/thread-usage-live") {
       // 页面刚刷新时官方还没推任何用量事件，用历史最后一条兜底。
       const history = await readThreadUsageHistory(String(args?.session_id || ""));

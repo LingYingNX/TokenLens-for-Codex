@@ -69,6 +69,10 @@
   const codexPlusUsageMagpieUsageUrl = "http://127.0.0.1:3425/v1/magpie/usage/requests?period=30d&agent=codex&limit=1";
   const codexPlusUsageMagpieTodayUsageUrl = "http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&agent=codex&limit=1";
   const codexPlusUsageMagpieTaskUsageUrlPrefix = "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=1&q=";
+  // 明细用同一会话的逐请求记录（limit 上限 500，用 offset 翻页）；model 是真实模型名，session_role 区分主会话与子代理。
+  const codexPlusUsageMagpieAttributionUrlPrefix = "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=500&q=";
+  const codexPlusUsageMagpieAttributionPageSize = 500;
+  const codexPlusUsageMagpieAttributionMaxPages = 10;
   const codexPlusUsageMagpieRefreshMs = 2000;
   const codexPlusUsageMagpieRetryMaxMs = 30000;
   const codexPlusUsageMagpieTimeoutMs = 3000;
@@ -137,6 +141,18 @@
     historyLoading: false,
     historyError: "",
     historyPromise: null,
+    historyRequest: null,
+    attribution: null,
+    attributionThreadId: "",
+    attributionFetchedAt: 0,
+    attributionLoading: false,
+    attributionError: "",
+    attributionPromise: null,
+    attributionRequest: null,
+    attributionRefreshTimer: 0,
+    attributionRefreshPending: false,
+    attributionRetryTimer: 0,
+    attributionFailureCount: 0,
     historyRetryTimer: 0,
     globalUsageLoading: false,
     globalUsageError: "",
@@ -197,6 +213,13 @@
           cacheRead: "缓存读取",
           hitRate: "缓存命中",
           task: "任务消耗",
+          modelUnavailable: "模型明细不可用",
+          modelPartial: "明细覆盖不完整",
+          modelError: "明细刷新失败，显示的可能是旧数据",
+          modelScope: "明细来自近 7 天记录，可能少于任务总数",
+          modelMain: "主会话",
+          modelAgent: "子代理",
+          modelUnknown: "未知模型",
           today: "今天消耗",
           yesterday: "昨天消耗",
           week: "近7天消耗",
@@ -266,6 +289,13 @@
         cacheRead: "Cache read",
         hitRate: "Cache hit",
         task: "Turn usage",
+        modelUnavailable: "Model details unavailable",
+        modelPartial: "Details are incomplete",
+        modelError: "Details refresh failed; displayed data may be stale",
+        modelScope: "From the last 7 days; may be less than the turn total",
+        modelMain: "Main session",
+        modelAgent: "Sub-agent",
+        modelUnknown: "Unknown model",
         today: "Today",
         yesterday: "Yesterday",
         week: "Last 7 days",
@@ -400,6 +430,15 @@
       .codex-plus-throughput-context-track{flex:1;height:6px;overflow:hidden;border-radius:2px;background:#2a263c}
       .codex-plus-throughput-context-fill{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#2563eb,#3b82f6,#818cf8);transition:width .18s ease}
       .codex-plus-throughput-context-value{min-width:68px;color:#60a5fa;font-size:10.5px;font-weight:700;line-height:normal;text-align:right;white-space:nowrap}
+      .codex-plus-throughput-model-usage{display:grid;gap:0;padding:1px 2px 5px 13px;font-size:12px}
+      .codex-plus-throughput-model-usage[hidden]{display:none}
+      .codex-plus-throughput-model-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:2px 0;line-height:normal}
+      .codex-plus-throughput-model-name{min-width:0;color:#cbd5e1;font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .codex-plus-throughput-model-number{color:#fff;font-size:12px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+      .codex-plus-throughput-model-note{color:#8c84a8;font-size:10.5px;line-height:1.45;padding-top:2px;white-space:normal}
+      #codex-plus-throughput-popover[data-theme="light"] .codex-plus-throughput-model-name{color:#475569}
+      #codex-plus-throughput-popover[data-theme="light"] .codex-plus-throughput-model-number{color:#111827}
+      #codex-plus-throughput-popover[data-theme="light"] .codex-plus-throughput-model-note{color:#94a3b8}
       .codex-plus-throughput-popover-rows{display:grid;gap:0}
       .codex-plus-throughput-popover-row{display:grid;grid-template-columns:5px minmax(0,1fr) auto;align-items:center;gap:6px;box-sizing:border-box;width:100%;min-height:23px;padding:3.5px 2px;line-height:normal}
       .codex-plus-throughput-popover-row[data-interactive="true"]{margin:0;border:0;border-radius:2px;background:transparent;color:inherit;font:inherit;line-height:normal;text-align:left;cursor:pointer}
@@ -2524,6 +2563,108 @@
     return promise;
   }
 
+  function codexPlusUsageAttribution(data, threadId) {
+    if (!data || data.threadId !== threadId || !Array.isArray(data.records)) {
+      return { status: "unavailable", partial: true, rows: [] };
+    }
+    let partial = data.partial !== false || data.truncated !== false;
+    const seen = new Map();
+    for (const record of data.records) {
+      const id = typeof record?.responseId === "string" ? record.responseId.trim() : "";
+      const owner = typeof record?.threadId === "string" ? record.threadId.trim() : "";
+      const turn = typeof record?.turnId === "string" ? record.turnId.trim() : "";
+      const total = record?.usage?.total_tokens;
+      if (!id || !owner || !turn || typeof total !== "number" || !Number.isFinite(total) || total < 0) {
+        partial = true;
+        continue;
+      }
+      const key = JSON.stringify([owner, turn, id]);
+      const model = typeof record.model === "string" ? record.model.trim() : "";
+      const value = { role: owner === threadId ? "main" : "agent", model, total };
+      if (seen.has(key)) {
+        const prior = seen.get(key);
+        if (prior && (prior.model !== model || prior.total !== total)) {
+          seen.set(key, null);
+          partial = true;
+        }
+      } else seen.set(key, value);
+    }
+    const groups = new Map();
+    for (const item of seen.values()) {
+      if (!item) continue;
+      const key = JSON.stringify([item.role, item.model]);
+      const existing = groups.get(key);
+      if (existing) existing.total += item.total;
+      else groups.set(key, { ...item });
+    }
+    return { status: "available", partial, rows: [...groups.values()] };
+  }
+
+  // 逐请求记录来自 Magpie：model 是真实模型名，session_role 区分主会话与子代理。
+  function codexPlusUsageAttributionFromMagpieRows(rows, threadId) {
+    const groups = new Map();
+    const seen = new Set();
+    let partial = false;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const role = row?.session_role === "subagent" ? "agent" : row?.session_role === "main" ? "main" : "";
+      const model = typeof row?.model === "string" ? row.model.trim() : "";
+      const input = Number(row?.in);
+      const cached = Number(row?.cache_read);
+      const output = Number(row?.out);
+      const total = (Number.isFinite(input) ? input : 0) + (Number.isFinite(cached) ? cached : 0) + (Number.isFinite(output) ? output : 0);
+      if (!Number.isFinite(total)) {
+        partial = true;
+        continue;
+      }
+      if (!role || !model) {
+        // 角色或模型缺失时不能猜；有量的部分按不完整处理，零量的错误请求可以忽略。
+        if (total > 0) partial = true;
+        continue;
+      }
+      if (total <= 0) continue;
+      // req 是路由名（同一会话会重复），去重必须用每次调用唯一的 route_id。
+      const key = row?.route_id == null ? (row?.response_id == null ? "" : String(row.response_id)) : String(row.route_id);
+      if (key) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      const groupKey = role + "|" + model;
+      const existing = groups.get(groupKey);
+      if (existing) existing.total += total;
+      else groups.set(groupKey, { role, model, total });
+    }
+    return {
+      status: groups.size ? "available" : "empty",
+      partial,
+      rows: [...groups.values()],
+      source: "magpie-rows",
+    };
+  }
+
+  async function codexPlusUsageFetchMagpieAttributionRows(threadId) {
+    const rows = [];
+    let partial = false;
+    for (let page = 0; page < codexPlusUsageMagpieAttributionMaxPages; page += 1) {
+      const offset = page * codexPlusUsageMagpieAttributionPageSize;
+      let payload;
+      try {
+        payload = await codexPlusUsageBridgeGetJson(
+          `${codexPlusUsageMagpieAttributionUrlPrefix}${encodeURIComponent(threadId)}&offset=${offset}`,
+        );
+      } catch (error) {
+        // 第一页就失败说明 Magpie 不可用，交给宿主回退；后面的页失败只保留已取到的记录。
+        if (!page) throw error;
+        partial = true;
+        break;
+      }
+      const batch = Array.isArray(payload?.rows) ? payload.rows : [];
+      rows.push(...batch);
+      if (batch.length < codexPlusUsageMagpieAttributionPageSize) return { rows, partial };
+      if (page === codexPlusUsageMagpieAttributionMaxPages - 1) partial = true;
+    }
+    return { rows, partial };
+  }
+
   async function codexPlusUsageLoadHistory(force = false) {
     const threadId = codexPlusUsageState.threadId;
     if (!threadId || typeof window.codexPlus?.call !== "function") return;
@@ -2531,13 +2672,15 @@
       && Date.now() - codexPlusUsageState.historyFetchedAt < 15_000;
     if (!force && fresh) return;
     if (codexPlusUsageState.historyPromise) return codexPlusUsageState.historyPromise;
+    const request = {};
+    codexPlusUsageState.historyRequest = request;
     codexPlusUsageState.historyLoading = true;
     codexPlusUsageState.historyError = "";
     codexPlusUsageRender(codexPlusUsageTurnSnapshot(codexPlusUsageState.turns.get(threadId), Date.now()));
     codexPlusUsageState.historyPromise = (async () => {
       try {
         const result = await window.codexPlus.call("/thread-usage-history", { session_id: threadId });
-        if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId) return;
+        if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId || codexPlusUsageState.historyRequest !== request) return;
         const latestSamples = codexPlusUsageHistorySamples(result);
         // 换线程必须从空白开始累积，否则上一个线程的调用会混进本轮统计。
         const previousSamples = codexPlusUsageState.historyThreadId === threadId
@@ -2553,11 +2696,12 @@
         codexPlusUsageState.historyFetchedAt = Date.now();
         codexPlusUsageSeedHistoryTurn(threadId);
       } catch (error) {
-        if (codexPlusUsageState.threadId === threadId) {
+        if (codexPlusUsageState.threadId === threadId && codexPlusUsageState.historyRequest === request) {
           codexPlusUsageState.historyError = String(error?.message || error);
         }
       } finally {
-        if (!codexPlusUsageState.disposed) {
+        if (!codexPlusUsageState.disposed && codexPlusUsageState.historyRequest === request) {
+          codexPlusUsageState.historyRequest = null;
           codexPlusUsageState.historyLoading = false;
           codexPlusUsageState.historyPromise = null;
           codexPlusUsageRender(codexPlusUsageTurnSnapshot(codexPlusUsageState.turns.get(codexPlusUsageState.threadId), Date.now()));
@@ -2565,6 +2709,112 @@
       }
     })();
     return codexPlusUsageState.historyPromise;
+  }
+
+  async function codexPlusUsageLoadAttribution(force = false) {
+    const threadId = codexPlusUsageState.threadId;
+    if (!threadId || typeof window.codexPlus?.call !== "function") return;
+    const fresh = codexPlusUsageState.attributionThreadId === threadId
+      && Date.now() - codexPlusUsageState.attributionFetchedAt < 15_000;
+    if (!force && fresh) return;
+    if (codexPlusUsageState.attributionPromise) return codexPlusUsageState.attributionPromise;
+    if (codexPlusUsageState.attributionRefreshTimer) {
+      window.clearTimeout(codexPlusUsageState.attributionRefreshTimer);
+      codexPlusUsageState.attributionRefreshTimer = 0;
+    }
+    if (codexPlusUsageState.attributionRetryTimer) {
+      window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
+      codexPlusUsageState.attributionRetryTimer = 0;
+    }
+    const request = {};
+    codexPlusUsageState.attributionRequest = request;
+    codexPlusUsageState.attributionLoading = true;
+    codexPlusUsageState.attributionError = "";
+    codexPlusUsageRender(codexPlusUsageTurnSnapshot(codexPlusUsageState.turns.get(threadId), Date.now()));
+    codexPlusUsageState.attributionPromise = (async () => {
+      try {
+        // 首选同一会话的逐请求记录：model 是真实模型名，session_role 区分主会话与子代理。
+        let next = null;
+        try {
+          const collected = await codexPlusUsageFetchMagpieAttributionRows(threadId);
+          next = codexPlusUsageAttributionFromMagpieRows(collected.rows, threadId);
+          if (next.status === "available") next.partial = next.partial || collected.partial;
+        } catch {
+          next = null;
+        }
+        if (!next || next.status !== "available") {
+          // Magpie 不可用时回退宿主 rollout 归属；只有路由名，仍标出来源限制。
+          const result = await window.codexPlus.call("/thread-usage-history", {
+            session_id: threadId,
+            attribution_only: true,
+          });
+          next = typeof codexPlusUsageAttribution === "function"
+            ? codexPlusUsageAttribution(result?.attribution, threadId) : null;
+        }
+        if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId || codexPlusUsageState.attributionRequest !== request) return;
+        codexPlusUsageState.attribution = next;
+        codexPlusUsageState.attributionThreadId = threadId;
+        codexPlusUsageState.attributionFetchedAt = Date.now();
+        codexPlusUsageState.attributionFailureCount = 0;
+      } catch (error) {
+        if (codexPlusUsageState.threadId === threadId && codexPlusUsageState.attributionRequest === request) {
+          // 归属失败不清除既有历史或上一次可用归属，避免新请求破坏总数和已展示数据。
+          codexPlusUsageState.attributionError = String(error?.message || error);
+          codexPlusUsageState.attributionFailureCount = (codexPlusUsageState.attributionFailureCount || 0) + 1;
+          codexPlusUsageState.attributionThreadId = threadId;
+          codexPlusUsageState.attributionFetchedAt = Date.now();
+        }
+      } finally {
+        if (!codexPlusUsageState.disposed && codexPlusUsageState.attributionRequest === request) {
+          codexPlusUsageState.attributionRequest = null;
+          codexPlusUsageState.attributionLoading = false;
+          codexPlusUsageState.attributionPromise = null;
+          if (codexPlusUsageState.attributionError) {
+            codexPlusUsageState.attributionRefreshPending = false;
+            const failures = codexPlusUsageState.attributionFailureCount;
+            const busy = codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试");
+            // 宿主繁忙可持续超过单次重试预算；仅面板可见时继续退避，间隔不超过 30 秒。
+            if (codexPlusUsageState.threadId === threadId && (busy || failures <= 3)
+                && (!busy || (codexPlusUsageState.popover && !codexPlusUsageState.popover.hidden))) {
+              const delay = Math.min(30_000, 2000 * 2 ** Math.min(failures - 1, 4));
+              codexPlusUsageState.attributionRetryTimer = window.setTimeout(() => {
+                codexPlusUsageState.attributionRetryTimer = 0;
+                if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId
+                    || (busy && (!codexPlusUsageState.popover || codexPlusUsageState.popover.hidden))) return;
+                void codexPlusUsageLoadAttribution(true);
+              }, delay);
+            }
+          } else if (codexPlusUsageState.attributionRefreshPending) {
+            codexPlusUsageState.attributionRefreshPending = false;
+            codexPlusUsageScheduleAttributionRefresh(false);
+          }
+          codexPlusUsageRender(codexPlusUsageTurnSnapshot(codexPlusUsageState.turns.get(codexPlusUsageState.threadId), Date.now()));
+        }
+      }
+    })();
+    return codexPlusUsageState.attributionPromise;
+  }
+
+  function codexPlusUsageScheduleAttributionRefresh(trailing = true) {
+    const threadId = codexPlusUsageState.threadId;
+    if (!threadId || codexPlusUsageState.disposed) return;
+    if (codexPlusUsageState.attributionPromise) {
+      if (trailing) codexPlusUsageState.attributionRefreshPending = true;
+      return;
+    }
+    const wait = codexPlusUsageState.attributionThreadId === threadId
+      ? Math.max(0, 15_000 - (Date.now() - codexPlusUsageState.attributionFetchedAt)) : 0;
+    if (!wait) {
+      if (trailing) codexPlusUsageState.attributionRefreshPending = true;
+      void codexPlusUsageLoadAttribution();
+      return;
+    }
+    if (codexPlusUsageState.attributionRefreshTimer) return;
+    codexPlusUsageState.attributionRefreshTimer = window.setTimeout(() => {
+      codexPlusUsageState.attributionRefreshTimer = 0;
+      if (codexPlusUsageState.disposed || codexPlusUsageState.threadId !== threadId) return;
+      codexPlusUsageScheduleAttributionRefresh(false);
+    }, wait);
   }
 
   function codexPlusUsageScheduleHistoryRetry(threadId) {
@@ -2651,6 +2901,9 @@
     if (method === "turn/completed" && codexPlusUsageNeedsHistoryRefresh(turn)) {
       void codexPlusUsageLoadHistory(true);
       codexPlusUsageScheduleHistoryRetry(threadId);
+    }
+    if (method === "turn/completed" && codexPlusUsageState.threadId === threadId) {
+      codexPlusUsageScheduleAttributionRefresh();
     }
     if (codexPlusUsageState.threadId === threadId) {
       codexPlusUsageRender(codexPlusUsageTurnSnapshot(turn, Date.now()));
@@ -2870,6 +3123,7 @@
           <span class="codex-plus-throughput-popover-number-group"><span class="codex-plus-throughput-popover-number" data-field="consumption"></span><span class="codex-plus-throughput-popover-arrow" aria-hidden="true"></span></span>
         </button>
       </div>
+      <div class="codex-plus-throughput-model-usage" data-role="model-usage" aria-live="polite"></div>
       <div class="codex-plus-throughput-popover-panel" data-role="range-panel" hidden>
         <div class="codex-plus-throughput-presets">
           <button class="codex-plus-throughput-preset" type="button" data-range="task" data-label="presetTask" aria-pressed="true"></button>
@@ -2936,6 +3190,7 @@
       toolPanel: popover.querySelector('[data-role="tool-panel"]'),
       tokenToggle: popover.querySelector('[data-role="token-toggle"]'),
       tokenPanel: popover.querySelector('[data-role="range-panel"]'),
+      modelUsage: popover.querySelector('[data-role="model-usage"]'),
       consumptionLabel: popover.querySelector('[data-role="consumption-label"]'),
       presets: [...popover.querySelectorAll("[data-range]")],
       customStart: popover.querySelector('[data-role="custom-start"]'),
@@ -3061,6 +3316,51 @@
     return window > 0
       ? `${percentText}/${codexPlusUsageFormatTokenWindow(window)}`
       : percentText;
+  }
+
+  function codexPlusUsageRenderModelUsage(panel) {
+    if (!panel) return;
+    panel.hidden = codexPlusUsageState.range !== "task";
+    if (panel.hidden) return;
+    const labels = codexPlusUsageText().labels;
+    const attribution = codexPlusUsageState.attribution;
+    panel.textContent = "";
+    const notes = [];
+    // 描述性说明不占可见行：只留加载/不可用/失败这类必须知道的状态，覆盖范围写进 aria-label。
+    const addNotice = (content) => {
+      const notice = document.createElement("div");
+      notice.className = "codex-plus-throughput-model-note";
+      notice.textContent = content;
+      panel.appendChild(notice);
+    };
+    if (codexPlusUsageState.attributionLoading) addNotice(labels.loading);
+    else if (!attribution || attribution.status !== "available" || !attribution.rows.length) addNotice(labels.modelUnavailable);
+    if (attribution?.status === "available") {
+      // 与上方用量行同样的排版：左侧名称、右侧数字，一行到底；子代理只加一个缩进箭头。
+      const rows = [...attribution.rows].sort((a, b) => (a.role === b.role
+        ? b.total - a.total
+        : a.role === "main" ? -1 : 1));
+      for (const item of rows) {
+        const row = document.createElement("div");
+        row.className = "codex-plus-throughput-model-row";
+        const name = document.createElement("span");
+        name.className = "codex-plus-throughput-model-name";
+        const modelName = item.model || labels.modelUnknown;
+        const roleLabel = item.role === "main" ? labels.modelMain : labels.modelAgent;
+        name.textContent = (item.role === "main" ? "" : "↳ ") + modelName;
+        name.title = roleLabel + " · " + modelName;
+        name.setAttribute("aria-label", name.title);
+        const value = document.createElement("span");
+        value.className = "codex-plus-throughput-model-number";
+        value.textContent = codexPlusUsageFormatCount(item.total);
+        row.append(name, value);
+        panel.appendChild(row);
+      }
+      if (attribution.partial) notes.push(labels.modelPartial);
+    }
+    if (codexPlusUsageState.attributionError) addNotice(labels.modelError);
+    notes.push(labels.modelScope);
+    panel.setAttribute("aria-label", notes.join("；"));
   }
 
   function codexPlusUsageRenderToolDetails(snapshot) {
@@ -3329,6 +3629,7 @@
       : usage?.source === "magpie"
         ? text.labels.taskMagpieLive
         : codexPlusUsageState.historyError;
+    codexPlusUsageRenderModelUsage(parts.modelUsage);
     parts.tokenToggle.setAttribute("aria-expanded", String(codexPlusUsageState.tokenExpanded));
     parts.tokenPanel.hidden = !codexPlusUsageState.tokenExpanded;
     for (const button of parts.presets) {
@@ -3400,6 +3701,7 @@
     if (codexPlusUsageState.historyThreadId !== codexPlusUsageState.threadId) {
       void codexPlusUsageLoadHistory();
     }
+    void codexPlusUsageLoadAttribution(!!codexPlusUsageState.attributionError && !codexPlusUsageState.attributionRetryTimer);
     void codexPlusUsageRefreshGlobalUsage();
     const parts = codexPlusUsageBuildPopover();
     codexPlusUsageUpdatePopover(
@@ -3437,6 +3739,10 @@
       // 只看指针：焦点留在面板里不再等于“还在用面板”，否则面板会永久卡在屏幕上。
       if (popover.matches(":hover")) return;
       popover.hidden = true;
+      if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试")) {
+        window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
+        codexPlusUsageState.attributionRetryTimer = 0;
+      }
     }, codexPlusUsagePopoverHideMs);
   }
 
@@ -3456,6 +3762,10 @@
     clearTimeout(codexPlusUsageState.hideTimer);
     codexPlusUsageState.hideTimer = 0;
     if (codexPlusUsageState.popover) codexPlusUsageState.popover.hidden = true;
+    if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试")) {
+      window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
+      codexPlusUsageState.attributionRetryTimer = 0;
+    }
   }
 
   function codexPlusUsageHide() {
@@ -3487,6 +3797,9 @@
         consumption.value,
         codexPlusUsageState.range,
         codexPlusUsageState.historyLoading,
+        JSON.stringify(codexPlusUsageState.attribution),
+        codexPlusUsageState.attributionLoading,
+        codexPlusUsageState.attributionError,
         codexPlusUsageState.historyError,
         codexPlusUsageState.globalUsageLoading,
         codexPlusUsageState.globalUsageError,
@@ -3521,6 +3834,9 @@
       consumption.value,
       codexPlusUsageState.range,
       codexPlusUsageState.historyLoading,
+      JSON.stringify(codexPlusUsageState.attribution),
+      codexPlusUsageState.attributionLoading,
+      codexPlusUsageState.attributionError,
       codexPlusUsageState.historyError,
       codexPlusUsageState.globalUsageLoading,
       codexPlusUsageState.globalUsageError,
@@ -3626,6 +3942,24 @@
         codexPlusUsageState.historyLoading = false;
         codexPlusUsageState.historyError = "";
         codexPlusUsageState.historyPromise = null;
+        codexPlusUsageState.historyRequest = null;
+        codexPlusUsageState.attribution = null;
+        codexPlusUsageState.attributionThreadId = "";
+        codexPlusUsageState.attributionFetchedAt = 0;
+        codexPlusUsageState.attributionLoading = false;
+        codexPlusUsageState.attributionError = "";
+        codexPlusUsageState.attributionPromise = null;
+        codexPlusUsageState.attributionRequest = null;
+        codexPlusUsageState.attributionRefreshPending = false;
+        codexPlusUsageState.attributionFailureCount = 0;
+        if (codexPlusUsageState.attributionRetryTimer) {
+          window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
+          codexPlusUsageState.attributionRetryTimer = 0;
+        }
+        if (codexPlusUsageState.attributionRefreshTimer) {
+          window.clearTimeout(codexPlusUsageState.attributionRefreshTimer);
+          codexPlusUsageState.attributionRefreshTimer = 0;
+        }
         if (codexPlusUsageState.historyRetryTimer) {
           window.clearTimeout(codexPlusUsageState.historyRetryTimer);
           codexPlusUsageState.historyRetryTimer = 0;
@@ -3756,6 +4090,11 @@
       codexPlusUsageClearPlacementGrace();
       codexPlusUsageState.timer = 0;
       codexPlusUsageState.timerDueAt = 0;
+      clearTimeout(codexPlusUsageState.attributionRefreshTimer);
+      clearTimeout(codexPlusUsageState.attributionRetryTimer);
+      codexPlusUsageState.attributionRetryTimer = 0;
+      codexPlusUsageState.attributionRefreshTimer = 0;
+      codexPlusUsageState.attributionRefreshPending = false;
       codexPlusUsageState.hideTimer = 0;
       codexPlusUsageState.historyRetryTimer = 0;
       codexPlusUsageState.observer?.disconnect();
