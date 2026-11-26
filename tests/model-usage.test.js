@@ -14,7 +14,8 @@ function compile(state, call) {
     "function codexPlusUsageRender() {}",
     "function codexPlusUsageTurnSnapshot() {}",
     extract("codexPlusUsageLoadHistory"),
-    extract("codexPlusUsageLoadAttribution"),
+    "const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),
     "return { history:codexPlusUsageLoadHistory, attribution:codexPlusUsageLoadAttribution };",
   ].join("\n"))(window,state);
 }
@@ -68,7 +69,8 @@ test("节流期间完成排一次尾随刷新，多次完成合并", async () =>
   const s=state(), calls=[], timers=new Map(); let now=100000, id=0;
   const fakeDate={now:()=>now};
   const window={codexPlus:{async call(route,args){calls.push(args);return {attribution:data("A",[row("A",String(calls.length),"m",calls.length)])};}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-  const api=new Function("window","Date","codexPlusUsageState", [extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,fakeDate,s);
+  const api=new Function("window","Date","codexPlusUsageState", [extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,fakeDate,s);
   await api.load(); now+=1000; api.schedule(); api.schedule();
   assert.equal(calls.length,1); assert.equal(timers.size,1);
   const task=[...timers.values()][0]; assert.equal(task.ms,14000); now+=task.ms; timers.clear(); task.fn();
@@ -96,7 +98,8 @@ test("归属界面呈现加载、不可用、部分覆盖及安全文本", () =>
 test("请求运行中完成合并为一次尾随刷新", async () => {
   const s=state(), pending=[], timers=new Map();let now=100000,id=0;
   const window={codexPlus:{call(){return new Promise(resolve=>pending.push(resolve));}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-  const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
+  const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
   const first=api.load(); api.schedule(); api.schedule(); assert.equal(pending.length,1);
   pending[0]({attribution:data("A",[row("A","1","a",10)])}); await first;
   assert.equal(timers.size,1); const timer=[...timers.values()][0]; assert.equal(timer.ms,15000);
@@ -109,7 +112,8 @@ test("切线程或销毁后的尾予定时器不请求旧线程", async () => {
   for (const exit of ["thread", "dispose"]) {
     const s=state(),calls=[],timers=new Map();let now=100000,id=0;
     const window={codexPlus:{async call(route,args){calls.push(args);return {attribution:data("A",[])};}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-    const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
+    const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {load:codexPlusUsageLoadAttribution,schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
     await api.load();now+=100;api.schedule();const timer=[...timers.values()][0];
     if(exit==="thread")s.threadId="B";else s.disposed=true;
     now+=timer.ms;timer.fn();assert.equal(calls.length,1);
@@ -124,7 +128,8 @@ test("相同 response 跨轮次独立计数，缺轮次标不完整",()=>{
 test("轮次完成首次即刻读取也安排落盘后尾随复查",async()=>{
   const s=state(),calls=[],timers=new Map();let now=100000,id=0;
   const window={codexPlus:{async call(){calls.push(now);return {attribution:data("A",[row("A",String(calls.length),"m",calls.length)])};}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-  const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
+  const api=new Function("window","Date","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return {schedule:codexPlusUsageScheduleAttributionRefresh};"].join("\n"))(window,{now:()=>now},s);
   api.schedule();await s.attributionPromise;assert.equal(calls.length,1);assert.equal(timers.size,1);
   const timer=[...timers.values()][0];now+=timer.ms;timers.clear();timer.fn();await s.attributionPromise;assert.equal(calls.length,2);assert.equal(timers.size,0);
 });
@@ -140,7 +145,8 @@ test("归属读取失败保留旧值时显示失败提示",()=>{
 test("A 扫描未结束时 B 遇忙自动退避并恢复", async () => {
   const s=state(),timers=new Map(),calls=[];let id=0,resolveA;
   const window={codexPlus:{call(route,args){calls.push(args.session_id);if(args.session_id==="A")return new Promise(resolve=>{resolveA=resolve;});if(calls.filter(x=>x==="B").length===1)return Promise.reject(new Error("繁忙"));return Promise.resolve({attribution:data("B",[row("B","r","model-b",123)])});}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-  const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
+  const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
   const a=api(); s.threadId="B";s.attributionPromise=null;s.attributionRequest=null;
   await api();assert.equal(s.attributionError,"繁忙");assert.equal(timers.size,1);
   const [timerId,timer]=[...timers.entries()][0];assert.ok(timer.ms>=2000);timers.delete(timerId);
@@ -152,7 +158,8 @@ test("连续失败有限退避，切线程或销毁不再重试", async()=>{
   for(const exit of ["limit","switch","dispose"]){
     const s=state(),timers=new Map(),calls=[];let id=0;
     const window={codexPlus:{async call(route,args){calls.push(args.session_id);throw new Error("busy");}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-    const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
+    const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
     await api(); const waits=[];
     for(let i=0;i<5 && timers.size;i++){const [key,timer]=[...timers.entries()][0];timers.delete(key);waits.push(timer.ms);if(exit==="switch")s.threadId="B";if(exit==="dispose")s.disposed=true;timer.fn();if(s.attributionPromise)await s.attributionPromise;}
     if(exit==="limit"){assert.equal(calls.length,4);assert.deepEqual(waits,[2000,4000,8000]);assert.equal(timers.size,0);}else assert.equal(calls.length,1);
@@ -162,7 +169,8 @@ test("连续失败有限退避，切线程或销毁不再重试", async()=>{
 test("宿主长期繁忙超过 14 秒仍退避并自动恢复",async()=>{
   const s=state(),timers=new Map(),calls=[];s.popover={hidden:false};let id=0,resolveA,busy=true;
   const window={codexPlus:{call(route,args){calls.push(args.session_id);if(args.session_id==="A")return new Promise(resolve=>{resolveA=resolve;});if(busy)return Promise.reject(new Error("standalone: 归属扫描繁忙，请稍后重试"));return Promise.resolve({attribution:data("B",[row("B","r","ok",42)])});}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-  const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
+  const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
   const a=api();s.threadId="B";s.attributionPromise=null;s.attributionRequest=null;await api();
   const delays=[];for(let i=0;i<6;i++){assert.equal(timers.size,1);const [key,t]=[...timers][0];timers.delete(key);delays.push(t.ms);t.fn();await s.attributionPromise;}
   assert.deepEqual(delays,[2000,4000,8000,16000,30000,30000]);assert.equal(timers.size,1);
@@ -174,7 +182,8 @@ test("繁忙重试仅面板可见且线程未切换",async()=>{
   for(const exit of ["hidden","thread","dispose"]){
     const s=state(),timers=new Map(),calls=[];s.popover={hidden:false};let id=0;
     const window={codexPlus:{async call(){calls.push(1);throw new Error("standalone: 归属扫描繁忙，请稍后重试");}},setTimeout(fn,ms){timers.set(++id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);}};
-    const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}",extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
+    const api=new Function("window","codexPlusUsageState",[extract("codexPlusUsageAttribution"),"function codexPlusUsageRender() {}","function codexPlusUsageTurnSnapshot() {}","const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
+      extract("codexPlusUsageLoadAttribution"),extract("codexPlusUsageScheduleAttributionRefresh"),"return codexPlusUsageLoadAttribution;"].join("\n"))(window,s);
     await api();const t=[...timers.values()][0];assert.ok(t);
     if(exit==="hidden")s.popover.hidden=true;else if(exit==="thread")s.threadId="B";else s.disposed=true;
     t.fn();assert.equal(calls.length,1);
@@ -223,6 +232,12 @@ test("逐请求记录分页取全并在上限处标记不完整", async () => {
     "http://magpie/q=thread%20a&offset=0",
     "http://magpie/q=thread%20a&offset=3",
   ]);
+  let totalCalls = 0;
+  const totalDone = await make(async () => { totalCalls += 1; return {rows: rowsOf(3), total: 3}; })("t");
+  assert.equal(totalCalls,1);
+  assert.equal(totalDone.rows.length,3);
+  assert.equal(totalDone.partial,false);
+
   let calls = 0;
   const capped = await make(async () => { calls += 1; return {rows: rowsOf(3)}; })("t");
   assert.equal(calls,2);
@@ -254,6 +269,7 @@ test("明细优先取 Magpie 逐请求记录，源不可用时回退宿主", asy
       "function codexPlusUsageRender(){}",
       extract("codexPlusUsageAttribution"),
       "function codexPlusUsageTurnSnapshot(){}",
+      "const codexPlusUsageAttributionBusy = \"standalone: 归属扫描繁忙，请稍后重试\";",
       extract("codexPlusUsageLoadAttribution"),
       "return {load:codexPlusUsageLoadAttribution};",
     ].join("\n"))(window, s, fromRows, bridge);

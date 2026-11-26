@@ -73,6 +73,7 @@
   const codexPlusUsageMagpieAttributionUrlPrefix = "http://127.0.0.1:3425/v1/magpie/usage/requests?period=7d&agent=codex&limit=500&q=";
   const codexPlusUsageMagpieAttributionPageSize = 500;
   const codexPlusUsageMagpieAttributionMaxPages = 10;
+  const codexPlusUsageAttributionBusy = "standalone: 归属扫描繁忙，请稍后重试";
   const codexPlusUsageMagpieRefreshMs = 2000;
   const codexPlusUsageMagpieRetryMaxMs = 30000;
   const codexPlusUsageMagpieTimeoutMs = 3000;
@@ -117,6 +118,7 @@
     popoverParts: null,
     threadId: "",
     turns: new Map(),
+    threadSettledCalls: new Map(),
     liveContextByThread: new Map(),
     liveContextFetchedAt: new Map(),
     liveContextPromises: new Map(),
@@ -251,6 +253,7 @@
           turnCalls: "本轮调用：",
           totalCalls: "总次数",
           averageSpeed: "平均速度",
+          averageSpeedHint: "整段对话已结算调用的 token 加权平均（本次打开后）",
         },
         calls: (value) => value + "次",
         rounds: (value) => value + "轮",
@@ -327,6 +330,7 @@
         turnCalls: "Calls this turn: ",
         totalCalls: "Total calls",
         averageSpeed: "avg speed",
+        averageSpeedHint: "Token-weighted average across this conversation since page load",
       },
       calls: (value) => value + (value === 1 ? " call" : " calls"),
       rounds: (value) => value + (value === 1 ? " turn" : " turns"),
@@ -909,12 +913,37 @@
     codexPlusUsageSettleCall(turn, at);
   }
 
+  // 平均速度按整段对话统计，样本跨轮次累积在线程上；刷新页面后从零开始。
+  function codexPlusUsageRememberThreadCall(turn, call) {
+    if (!turn?.threadId) return;
+    let calls = codexPlusUsageState.threadSettledCalls.get(turn.threadId);
+    if (!calls) {
+      calls = [];
+      codexPlusUsageState.threadSettledCalls.set(turn.threadId, calls);
+      if (codexPlusUsageState.threadSettledCalls.size > codexPlusUsageMaxTurns) {
+        codexPlusUsageState.threadSettledCalls.delete(codexPlusUsageState.threadSettledCalls.keys().next().value);
+      }
+    }
+    calls.push(call);
+    if (calls.length > codexPlusUsageMaxLiveSamples) {
+      calls.splice(0, calls.length - codexPlusUsageMaxLiveSamples);
+    }
+  }
+
+  function codexPlusUsageThreadSettledCalls(turn) {
+    const calls = turn?.threadId
+      ? codexPlusUsageState.threadSettledCalls.get(turn.threadId)
+      : null;
+    return calls?.length ? calls : (turn?.settledCalls ?? []);
+  }
+
   // 输出 token 与它的解码时长要成对结算；用量通知晚于调用结束也不会拉低分母。
   function codexPlusUsageSettleCall(turn, at) {
     if (!turn || !(turn.pendingDecodeMs > 0) || !(turn.pendingOutput > 0)) return;
     const call = { output: turn.pendingOutput, decodeMs: turn.pendingDecodeMs };
     if (Number.isFinite(at)) call.observedAt = at;
     turn.settledCalls.push(call);
+    codexPlusUsageRememberThreadCall(turn, call);
     if (turn.settledCalls.length > codexPlusUsageMaxLiveSamples) {
       turn.settledCalls.splice(0, turn.settledCalls.length - codexPlusUsageMaxLiveSamples);
     }
@@ -1361,7 +1390,7 @@
     );
     return {
       speed: codexPlusUsageModelWindowSpeed(turn, end),
-      averageSpeed: codexPlusUsageAverageSpeed(turn.settledCalls),
+      averageSpeed: codexPlusUsageAverageSpeed(codexPlusUsageThreadSettledCalls(turn)),
       ttftMs,
       decodeMs,
       toolMs,
@@ -1780,11 +1809,27 @@
       throw new Error("HTTP fetch service 不可用");
     }
     const requestId = `tokenlens-magpie-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const result = await services.httpFetch.fetch(requestId, {
-      url,
-      method: "GET",
-      headers: {},
-      retry: false,
+    // 本地服务可能接了连接不回包；没有超时会让等待它的 promise 永远不落地。
+    const result = await new Promise((resolve, reject) => {
+      const timer = window.setTimeout(
+        () => reject(new Error(`Magpie 请求超时 (${codexPlusUsageMagpieTimeoutMs}ms)`)),
+        codexPlusUsageMagpieTimeoutMs,
+      );
+      Promise.resolve(services.httpFetch.fetch(requestId, {
+        url,
+        method: "GET",
+        headers: {},
+        retry: false,
+      })).then(
+        (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          window.clearTimeout(timer);
+          reject(error);
+        },
+      );
     });
     if (!result?.response) throw new Error(result?.error || "HTTP fetch service 未返回响应");
     if (!result.response.ok) throw new Error(`Magpie 请求失败 (${result.response.status || 0})`);
@@ -2659,6 +2704,9 @@
       }
       const batch = Array.isArray(payload?.rows) ? payload.rows : [];
       rows.push(...batch);
+      // 响应带 total 时按它收手，避免在 5000 行上限处多打几页空请求。
+      const total = Number(payload?.total);
+      if (Number.isFinite(total) && total >= 0 && rows.length >= total) return { rows, partial };
       if (batch.length < codexPlusUsageMagpieAttributionPageSize) return { rows, partial };
       if (page === codexPlusUsageMagpieAttributionMaxPages - 1) partial = true;
     }
@@ -2772,7 +2820,7 @@
           if (codexPlusUsageState.attributionError) {
             codexPlusUsageState.attributionRefreshPending = false;
             const failures = codexPlusUsageState.attributionFailureCount;
-            const busy = codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试");
+            const busy = codexPlusUsageState.attributionError.includes(codexPlusUsageAttributionBusy);
             // 宿主繁忙可持续超过单次重试预算；仅面板可见时继续退避，间隔不超过 30 秒。
             if (codexPlusUsageState.threadId === threadId && (busy || failures <= 3)
                 && (!busy || (codexPlusUsageState.popover && !codexPlusUsageState.popover.hidden))) {
@@ -3593,6 +3641,7 @@
     parts.averageValue.textContent = snapshot?.averageSpeed == null
       ? unavailable
       : codexPlusUsageFormatSpeed(snapshot.averageSpeed);
+    parts.averageValue.title = text.labels?.averageSpeedHint || "";
     const context = codexPlusUsageContextSnapshot(
       codexPlusUsageState.turns.get(codexPlusUsageState.threadId),
       codexPlusUsageState.liveContextByThread.get(codexPlusUsageState.threadId),
@@ -3739,7 +3788,7 @@
       // 只看指针：焦点留在面板里不再等于“还在用面板”，否则面板会永久卡在屏幕上。
       if (popover.matches(":hover")) return;
       popover.hidden = true;
-      if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试")) {
+      if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes(codexPlusUsageAttributionBusy)) {
         window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
         codexPlusUsageState.attributionRetryTimer = 0;
       }
@@ -3762,7 +3811,7 @@
     clearTimeout(codexPlusUsageState.hideTimer);
     codexPlusUsageState.hideTimer = 0;
     if (codexPlusUsageState.popover) codexPlusUsageState.popover.hidden = true;
-    if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes("standalone: 归属扫描繁忙，请稍后重试")) {
+    if (codexPlusUsageState.attributionRetryTimer && codexPlusUsageState.attributionError.includes(codexPlusUsageAttributionBusy)) {
       window.clearTimeout(codexPlusUsageState.attributionRetryTimer);
       codexPlusUsageState.attributionRetryTimer = 0;
     }
@@ -4108,6 +4157,7 @@
       codexPlusUsageState.node?.remove();
       codexPlusUsageState.popover?.remove();
       codexPlusUsageState.turns.clear();
+      codexPlusUsageState.threadSettledCalls.clear();
       codexPlusUsageState.liveContextByThread.clear();
       codexPlusUsageState.liveContextFetchedAt.clear();
       codexPlusUsageState.liveContextPromises.clear();

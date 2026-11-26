@@ -27,16 +27,20 @@ const settledSpeed = new Function(
   + extract("codexPlusUsageSettledSpeed") + "\nreturn codexPlusUsageSettledSpeed;",
 )(400, 1000, 30);
 
+const settlementState = { threadSettledCalls: new Map() };
 const settlement = new Function(
   "codexPlusUsageMaxLiveSamples",
+  "codexPlusUsageState",
   [
+    "const codexPlusUsageMaxTurns = 32;",
     extract("codexPlusUsageNumber"),
     extract("codexPlusUsageCreateTurn"),
+    extract("codexPlusUsageRememberThreadCall"),
     extract("codexPlusUsageFlushDecode"),
     extract("codexPlusUsageSettleCall"),
   ].join("\n")
     + "\nreturn { createTurn: codexPlusUsageCreateTurn, flush: codexPlusUsageFlushDecode, settle: codexPlusUsageSettleCall };",
-)(512);
+)(512, settlementState);
 
 const modelWindowSpeed = new Function(
   "codexPlusUsageSpeedPeak",
@@ -147,6 +151,22 @@ test("用量通知晚于解码结束时仍与本次调用时长配对", () => {
   reverse.pendingOutput = 500;
   settlement.flush(reverse, 2000);
   assert.deepEqual(reverse.settledCalls, [{ output: 500, decodeMs: 2000, observedAt: 2000 }]);
+});
+
+test("平均速度跨轮次累积在同一线程上", () => {
+  settlementState.threadSettledCalls.clear();
+  const first = settlement.createTurn("thread-a", "turn-1", 0);
+  first.decodeStartedAt = 0;
+  first.pendingOutput = 100;
+  settlement.flush(first, 2000);
+  const second = settlement.createTurn("thread-a", "turn-2", 5000);
+  second.decodeStartedAt = 5000;
+  second.pendingOutput = 300;
+  settlement.flush(second, 7000);
+  const calls = settlementState.threadSettledCalls.get("thread-a");
+  assert.equal(calls.length, 2);
+  assert.equal(settlementState.threadSettledCalls.get("thread-b"), undefined);
+  assert.equal(averageSpeed(calls), 100);
 });
 
 test("主指标剔除首 token 等待与工具执行时间", () => {

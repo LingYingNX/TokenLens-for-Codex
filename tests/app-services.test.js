@@ -88,6 +88,18 @@ test("运行时形状不认识时返回 null，不抛错", () => {
   assert.equal(webpackServices({ c: { a: { exports: { appServices: { httpFetch: {} } } } } }), null);
 });
 
+test("HTTP service 卡住时按 Magpie 超时返回错误", async () => {
+  const getJson = new Function(
+    "window",
+    "codexPlusUsageMagpieTimeoutMs",
+    extract("codexPlusUsageServiceGetJson") + "\nreturn codexPlusUsageServiceGetJson;",
+  )({ setTimeout, clearTimeout }, 10);
+  await assert.rejects(
+    getJson({ httpFetch: { fetch: () => new Promise(() => {}) } }, "http://127.0.0.1:3425/x"),
+    /Magpie 请求超时/,
+  );
+});
+
 test("HTTP service 与 bridge 都失败时，两条原因都要带出来", async () => {
   const state = { appServicesPromise: null };
   const getJson = new Function(

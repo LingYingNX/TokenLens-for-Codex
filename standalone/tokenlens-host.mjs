@@ -388,7 +388,6 @@ async function handleHostCall(cdp, rawPayload) {
         payload = { attribution: await readLimitedAttribution(sessionId) };
       } else {
         payload = { history: await readThreadUsageHistory(sessionId) };
-        if (args?.include_attribution) payload.attribution = await readLimitedAttribution(sessionId);
       }
     } else if (route === "/thread-usage-live") {
       // 页面刚刷新时官方还没推任何用量事件，用历史最后一条兜底。

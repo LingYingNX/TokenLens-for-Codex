@@ -126,13 +126,14 @@ test("MCP 显示服务器名，记忆库保留独立分类", () => {
 test("进行中的工具沿用 key 分类并与已结束项合并", () => {
   const snapshotApi = new Function([
     "const codexPlusUsageMaxLiveSamples = 512;",
-    "const codexPlusUsageState = { liveContextByThread: new Map() };",
+    "const codexPlusUsageState = { liveContextByThread: new Map(), threadSettledCalls: new Map() };",
     "function codexPlusUsageToolLabel(key) { return key === 'skills' ? 'Skills' : key; }",
     "function codexPlusUsageClamp(value, minimum, maximum) { return Math.min(maximum, Math.max(minimum, value)); }",
     extract("codexPlusUsageMergedDuration"),
     "function codexPlusUsageContextSnapshot() { return { percent: null, window: null }; }",
     "function codexPlusUsageModelWindowSpeed() { return null; }",
     "function codexPlusUsageAverageSpeed() { return null; }",
+    "function codexPlusUsageThreadSettledCalls(turn) { return turn?.settledCalls ?? []; }",
     extract("codexPlusUsageTurnSnapshot"),
     "return codexPlusUsageTurnSnapshot;",
   ].join("\n"))();

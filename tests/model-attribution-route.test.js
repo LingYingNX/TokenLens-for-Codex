@@ -34,27 +34,18 @@ test("宿主从 rollout 模块导入归属读取函数", () => {
   assert.match(host, /import\s*\{[^}]*\breadRolloutUsageAttribution\b[^}]*\}\s*from\s*["']\.\/rollout-history\.mjs["']/);
 });
 
-test("历史路由默认或关闭归属时保持原有响应且不读取归属", async () => {
-  for (const args of [{ session_id: "thread-1" }, { session_id: "thread-1", include_attribution: false }, undefined]) {
+test("历史路由保持原有响应且不读取归属", async () => {
+  for (const args of [{ session_id: "thread-1" }, undefined]) {
     const f = fixture();
     assert.deepEqual(await f.request("/thread-usage-history", args), [7, true, { history: f.history }]);
     assert.deepEqual(f.calls, [["history", args?.session_id || ""]]);
   }
 });
 
-test("历史路由开启归属时透传完整归属数据和 session_id", async () => {
+test("仅归属模式只读取归属，不读取历史", async () => {
   const f = fixture();
-  assert.deepEqual(await f.request("/thread-usage-history", { session_id: "thread-1", include_attribution: true }), [7, true, { history: f.history, attribution: f.attribution }]);
-  assert.deepEqual(f.calls, [["history", "thread-1"], ["attribution", "thread-1"]]);
-});
-
-test("仅归属模式不读取历史，并优先于 include_attribution", async () => {
-  for (const include of [undefined, false, true]) {
-    const f = fixture();
-    const args = { session_id: "thread-1", attribution_only: true, include_attribution: include };
-    assert.deepEqual(await f.request("/thread-usage-history", args), [7, true, { attribution: f.attribution }]);
-    assert.deepEqual(f.calls, [["attribution", "thread-1"]]);
-  }
+  assert.deepEqual(await f.request("/thread-usage-history", { session_id: "thread-1", attribution_only: true }), [7, true, { attribution: f.attribution }]);
+  assert.deepEqual(f.calls, [["attribution", "thread-1"]]);
 });
 
 test("归属扫描忙时立即报错，历史请求不等待，结束后可重试", async () => {
@@ -80,9 +71,9 @@ test("扫描失败后释放并发限制", async () => {
   assert.deepEqual(await f.request("/thread-usage-history", { session_id: "thread-1", attribution_only: true }), [7, true, { attribution: f.attribution }]);
 });
 
-test("其他路由即使带归属参数也保持原有行为", async () => {
+test("仅归属参数不影响其他路由", async () => {
   const f = fixture();
-  assert.deepEqual(await f.request("/thread-usage-live", { session_id: "thread-1", include_attribution: true }), [7, true, { status: "ok", events: [{ total_tokens: 12, context_window: 100 }] }]);
-  assert.deepEqual(await f.request("/unknown", { include_attribution: true }), [7, true, { error: "standalone: 不支持的宿主路由 /unknown" }]);
+  assert.deepEqual(await f.request("/thread-usage-live", { session_id: "thread-1", attribution_only: true }), [7, true, { status: "ok", events: [{ total_tokens: 12, context_window: 100 }] }]);
+  assert.deepEqual(await f.request("/unknown", { attribution_only: true }), [7, true, { error: "standalone: 不支持的宿主路由 /unknown" }]);
   assert.deepEqual(f.calls, [["history", "thread-1"]]);
 });

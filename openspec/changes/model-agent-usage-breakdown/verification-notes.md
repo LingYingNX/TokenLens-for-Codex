@@ -24,3 +24,10 @@
 - 用真实数据跑聚合函数得到 5 行：主会话 `deepseek-v4.1-flash-1017`、`gpt-6.1-terra`，子代理 `deepseek-v4.1-flash-1017`、`DeepSeek-V4.1-Flash`、`sn-deepseek-v4-1-flash-1017`。
 - 限制：unknown 角色行（样例 36 行、29,810 tokens）被排除并标记 partial；Magpie 保留仅 7 天。
 - 2026-11-25 用户决定：面板不显示任何描述行，partial 与覆盖范围说明只写入面板的 aria-label；规格同步改成「说明走无障碍标签」。
+
+## 2026-11-26 评审修复
+
+- Magpie HTTP service（appServices.httpFetch）统一加 3 秒超时，避免本地服务卡死时归属 promise 永远不落地、后续刷新全被挡住。
+- 明细分页按响应 `total` 提前收手（行数够了就不再打下一页），5000 行上限只在真正超大任务里生效。
+- 删掉宿主未使用的 `include_attribution` 分支；繁忙提示文案提为常量 `codexPlusUsageAttributionBusy`。
+- 测试 197 pass；受影响测试补了 HTTP 超时与 total 提前停止两项；注入后实测面板 280px、两行、无描述行。
